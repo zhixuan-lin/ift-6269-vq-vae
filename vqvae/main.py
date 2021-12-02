@@ -150,18 +150,18 @@ def save_training_plot(train_losses, test_losses, title, fname, show_figure=Fals
     savefig(fname, show_figure)
 
 # Show results, from https://github.com/rll/deepul/blob/master/deepul/hw3_helper.py
-def save_results(samples, real_recon, vqvae_train_loss, vqvae_test_loss, prior_train_loss, prior_test_loss, show_figure=False):
+def save_results(samples, real_recon, vqvae_train_loss, vqvae_test_loss, prior_train_loss, prior_test_loss, result_dir, show_figure=False):
     samples, real_recon = samples.astype('float32'), real_recon.astype('float32')
     print(f'VQ-VAE Final Test Loss: {vqvae_test_loss[-1]:.4f}')
     print(f'PixelCNN Prior Final Test Loss: {prior_test_loss[-1]:.4f}')
     save_training_plot(vqvae_train_loss, vqvae_test_loss,'VQ-VAE Train Plot',
-                       'results/vqvae_train_plot.png')
+                       osp.join(result_dir, 'vqvae_train_plot.png'))
     save_training_plot(prior_train_loss, prior_test_loss,'PixelCNN Prior Train Plot',
-                       'results/prior_train_plot.png')
+                       osp.join(result_dir, 'prior_train_plot.png'))
     show_samples(samples, title='Samples',
-                 fname='results/samples.png')
+                 fname=osp.join(result_dir, 'samples.png')
     show_samples(real_recon, title='Reconstructions',
-                 fname='results/reconstructions.png')
+                 fname=osp.join(result_dir, 'reconstructions.png'))
 
 
 def main():
@@ -174,14 +174,19 @@ def main():
     epochs = 2
     prior_epochs = 2
 
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--result_dir', type=str, default='./results', help='Directory to save results')
+    parser.add_argument('--data_dir', type=str, default='./data', help='Directory to save the dataset')
+    args = parser.parse_args()
+
 
 
     # TODO: Warning, no validation split here
     # No normalization here since it is done in the code
     transform = transforms.Compose([transforms.ToTensor()])
     # Stupid code here
-    train_data = torchvision.datasets.CIFAR10(root='./data', train=True, download=True, transform=transform).data[:256]
-    test_data = torchvision.datasets.CIFAR10(root='./data', train=False, download=True, transform=transform).data[:256]
+    train_data = torchvision.datasets.CIFAR10(root=args.data_dir, train=True, download=True, transform=transform).data[:256]
+    test_data = torchvision.datasets.CIFAR10(root=args.data_dir, train=False, download=True, transform=transform).data[:256]
 
     trainloader = DataLoader(train_data.transpose(0, 3, 1, 2).astype(np.float32), batch_size=batch_size, shuffle=True)
     testloader = DataLoader(test_data.transpose(0, 3, 1, 2).astype(np.float32), batch_size=batch_size, shuffle=False)
@@ -225,7 +230,7 @@ def main():
 
     # (100, C, H, W), uint8
     real_recon = np.concatenate((test_data[:50], recon), axis=0).astype(np.uint8)
-    save_results(samples, real_recon, vqvae_train_loss, vqvae_test_loss, prior_train_loss, prior_test_loss, show_figure=False)
+    save_results(samples, real_recon, vqvae_train_loss, vqvae_test_loss, prior_train_loss, prior_test_loss, result_dir=args.result_dir, show_figure=False)
 
 
 
