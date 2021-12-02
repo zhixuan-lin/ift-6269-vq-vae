@@ -1,8 +1,16 @@
 # ift-6269-vq-vae
 
+## Dependencies
+
+```sh
+conda create -n vqvae python=3.9
+conda activate vqvae
+pip install -r requirements.txt
+```
+
 ## Run
 
-`python vqvae/main.py`
+`python vqvae_lib/main.py`
 
 ## Using Colab
 

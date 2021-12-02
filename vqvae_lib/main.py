@@ -7,7 +7,7 @@ import numpy as np
 from torch.utils.data import DataLoader
 from torchvision import transforms
 from torchvision.utils import make_grid
-from vqvae.vqvae import VQVAE, VQVAEBase, VQVAEPrior, create_indices_dataset
+from vqvae_lib.vqvae import VQVAE, VQVAEBase, VQVAEPrior, create_indices_dataset
 import matplotlib.pyplot as plt
 
 class ArrayDict(dict):
