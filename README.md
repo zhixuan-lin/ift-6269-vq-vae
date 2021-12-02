@@ -32,7 +32,7 @@ Other classes in this file are just building blocks (e.g. residual blocks, maske
 `main.py` implements the training. You can only look at `main()`. Other code are just logging and visualization. What it does:
 
 * Train the encoder and decoder (`VQVAEBase`).
-* After that, use the encoder to generate a dataset of prior indices.
+* After that, use the encoder to generate a dataset of indices of the embeddings.
 * Train the prior (`VQVAEPrior`) on this indices dataset.
 * Combine `VQVAEBase` and `VQVAEPrior` into `VQVAE`. We can then generate samples and reconstruct inputs.
 
