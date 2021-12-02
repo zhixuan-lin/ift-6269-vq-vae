@@ -159,7 +159,7 @@ def save_results(samples, real_recon, vqvae_train_loss, vqvae_test_loss, prior_t
     save_training_plot(prior_train_loss, prior_test_loss,'PixelCNN Prior Train Plot',
                        osp.join(result_dir, 'prior_train_plot.png'))
     show_samples(samples, title='Samples',
-                 fname=osp.join(result_dir, 'samples.png')
+                 fname=osp.join(result_dir, 'samples.png'))
     show_samples(real_recon, title='Reconstructions',
                  fname=osp.join(result_dir, 'reconstructions.png'))
 
