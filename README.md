@@ -2,7 +2,11 @@
 
 ## Run
 
-`python main.py`
+`python vqvae/main.py`
+
+## Using Colab
+
+In Colab, try to open the notebook `demo.ipynb` from Github (you need to check the option to include private repos). Then, zip the project, name it `ift-6269-vq-vae.zip` and upload it. Then you can run it.
 
 
 ## Read the code
