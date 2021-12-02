@@ -171,8 +171,6 @@ def main():
     device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
     epochs = 20
     prior_epochs = 200
-    epochs = 2
-    prior_epochs = 2
 
     parser = argparse.ArgumentParser()
     parser.add_argument('--result_dir', type=str, default='./results', help='Directory to save results')
