@@ -183,8 +183,8 @@ def main():
     # No normalization here since it is done in the code
     transform = transforms.Compose([transforms.ToTensor()])
     # Stupid code here
-    train_data = torchvision.datasets.CIFAR10(root=args.data_dir, train=True, download=True, transform=transform).data[:256]
-    test_data = torchvision.datasets.CIFAR10(root=args.data_dir, train=False, download=True, transform=transform).data[:256]
+    train_data = torchvision.datasets.CIFAR10(root=args.data_dir, train=True, download=True, transform=transform).data
+    test_data = torchvision.datasets.CIFAR10(root=args.data_dir, train=False, download=True, transform=transform).data
 
     trainloader = DataLoader(train_data.transpose(0, 3, 1, 2).astype(np.float32), batch_size=batch_size, shuffle=True)
     testloader = DataLoader(test_data.transpose(0, 3, 1, 2).astype(np.float32), batch_size=batch_size, shuffle=False)
