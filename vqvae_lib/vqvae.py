@@ -6,6 +6,78 @@ VQ-VAE. Two classes that you will use:
 import torch
 from torch import nn
 from torch.nn import functional as F
+from torch.distributions import TransformedDistribution, Uniform, SigmoidTransform, AffineTransform
+
+def logsigmoid_diff(a, b):
+    """Implements log(sig(a) - sig(b)), in a numerically stable way.
+
+    It is equal to
+    log(exp(-b) - exp(-a)) + log(sig(a)) + log(sig(b))
+    """
+    c = torch.max(-a, -b).detach()
+    term = torch.exp(-b - c) - torch.exp(-a - c) 
+    # Clamp, but retain gradient.
+    term = term + torch.max(torch.zeros_like(term), 1e-7 - term.detach())
+    term1 = c + torch.log(term)
+
+  
+    diff = term1 + F.logsigmoid(a) + F.logsigmoid(b)
+    return diff
+
+def Logistic(loc, scale):
+     return TransformedDistribution(Uniform(0, 1), [SigmoidTransform().inv, AffineTransform(loc, scale)])
+
+class DiscretizedLogistic:
+    """Have the same interfrace as torch.distributions.Categorical"""
+    def __init__(self, n_classes, loc, scale):
+        self.loc = loc
+        self.scale = scale
+        self.n_classes = n_classes
+    
+    def log_prob(self, x):
+        assert torch.all((0 <= x) & (x <= self.n_classes - 1))
+        # Somehow we don't check whether x is discrete.
+        high = (x + 0.5 - self.loc) / self.scale
+        low = (x - 0.5 - self.loc) / self.scale
+        # Normal case, when 0 < x < n_classes -1
+        logdiff = logsigmoid_diff(high, low)
+        try:
+            term1 = logdiff
+            assert torch.all(torch.isfinite(term1))
+        except:
+            indices = torch.nonzero(~torch.isfinite(term1), as_tuple=True)
+            print(len(indices), len(indices[0]))
+            print(x[indices][:5], self.loc[indices][:5], self.scale[indices][:5], sep='\n')
+            raise
+        assert torch.all(torch.isfinite(logdiff))
+        # Left and right case, when 0 == x and x == n_classes - 1
+        left_case = F.logsigmoid(high)
+        # 1 - sigmoid(low) = sigmoid(-low)
+        right_case = F.logsigmoid(-low)
+        logdiff = torch.where(x == 0., left_case, logdiff)
+        logdiff = torch.where(x == (self.n_classes - 1), right_case, logdiff)
+        return logdiff
+    
+    # @torch.no_grad()
+    # def sample(self):
+    #     # This is wrong.
+    #     samples = Logistic(loc, scale).sample()
+    #     # samples = torch.floor(samples + 0.5).clamp(min=0., max=self.n_classes-1)
+    #     samples = samples.clamp(min=0., max=(self.n_classes - 1) / 256)
+    #     return samples
+
+    @torch.no_grad()
+    def _test(self):
+        to_eval = torch.arange(self.n_classes).long()
+        to_eval = to_eval.view(-1, *((1,) * self.loc.ndim))
+        # (N_class, *)
+        to_eval = to_eval.expand((self.n_classes,) + self.loc.size())
+        # (N_class, *)
+        probs = torch.exp(self.log_prob(to_eval))
+        a = (probs.sum(dim=0))
+        diff = (a - 1.0).abs().max()
+        print((a - 1.0).abs().max())
+        assert diff < 1e-5
 
 class LayerNorm(nn.LayerNorm):
     """You need this. Layernorm only handles last several dimensions."""
@@ -267,8 +339,10 @@ class VQVAEPrior(PixelCNN):
         raise NotImplementedError()
 
 class VQVAEBase(nn.Module):
-    def __init__(self, beta=0.25):
+    def __init__(self, beta=0.25, loss_type='mse', pixel_range=256):
         super().__init__()
+        assert loss_type in ['mse', 'discretized_logistic']
+        self.loss_type = loss_type
         relu = nn.ReLU(inplace=True)
         self.encoder = nn.Sequential(
             nn.Conv2d(3, 256, 4, 2, 1), # 16 x 16
@@ -281,19 +355,32 @@ class VQVAEBase(nn.Module):
             ResBlock(256, 256),
             nn.Conv2d(256, 256, 1, 1, 0)
         )
-        self.decoder = nn.Sequential(
-            ResBlock(256, 256),
-            ResBlock(256, 256),
-            nn.ConvTranspose2d(256, 256, 4, 2, 1),
-            LayerNorm(256),
-            relu,
-            nn.ConvTranspose2d(256, 3, 4, 2, 1),
-            nn.Tanh()
-        )
+        if self.loss_type == 'mse':
+            self.decoder = nn.Sequential(
+                ResBlock(256, 256),
+                ResBlock(256, 256),
+                nn.ConvTranspose2d(256, 256, 4, 2, 1),
+                LayerNorm(256),
+                relu,
+                nn.ConvTranspose2d(256, 3, 4, 2, 1),
+                nn.Tanh()
+            )
+        elif self.loss_type == 'discretized_logistic':
+            self.decoder = nn.Sequential(
+                ResBlock(256, 256),
+                ResBlock(256, 256),
+                nn.ConvTranspose2d(256, 256, 4, 2, 1),
+                LayerNorm(256),
+                relu,
+                nn.ConvTranspose2d(256, 3 * 2, 4, 2, 1))
+        else:
+            raise ValueError('Invalid value for loss_type')
+
         # (K, D)
         self.codebook = nn.Embedding(128, 256)
         self.codebook.weight.data.uniform_(-1 / 128, 1 / 128)
         self.beta = beta
+        self.pixel_range = pixel_range
 
     @property
     def device(self):
@@ -326,26 +413,56 @@ class VQVAEBase(nn.Module):
         # ST gradient. Value is embeddings, but grad flows to encoded.
         input = encoded + (embeddings - encoded).detach()
         return self.decoder(input)
-    
+
+    def decode_and_sample(self, embeddings, use_mean=True):
+        params = self.decoder(embeddings)
+        return 128 * params[:, :3, :, :] + 128
+
     @torch.no_grad()
     def reconstruct(self, x):
-        _, encoded, embeddings = self.encode(x)
-        return 128 * self.decode(encoded, embeddings) + 128
+        _, _, embeddings = self.encode(x)
+        return self.decode_and_sample(embeddings)
 
     def forward(self, x):
+        """
+        Important: assume x is in [0, 255]
+        """
         
         _, encoded, embeddings = self.encode(x)
-        recon = self.decode(encoded, embeddings)
-        recon_loss = F.mse_loss(recon, (x - 128) / 128, reduction='none').mean(dim=[1, 2, 3])
-
         codebook_loss = F.mse_loss(embeddings, encoded.detach(), reduction='none').mean(dim=[1, 2, 3])
         commitment_loss = F.mse_loss(encoded, embeddings.detach(), reduction='none').mean(dim=[1, 2, 3])
+        neg_log_likelihood = None
+        if self.loss_type == 'mse':
+            recon = self.decode(encoded, embeddings)
+            recon_loss = F.mse_loss(recon, (x - 128) / 128, reduction='none').mean(dim=[1, 2, 3])
+            loss = recon_loss + codebook_loss + self.beta * commitment_loss
+            assert recon_loss.size() == codebook_loss.size() == commitment_loss.size()
+        elif self.loss_type == 'discretized_logistic':
+            params = self.decode(encoded, embeddings)
+            # (B, 3, H, W), (B, 3, H, W)
+            loc_tmp, scale_tmp = params.chunk(2, dim=1)
+            # Let loc_tmp stay in (-1, 1)
+            loc = 128 * loc_tmp + 128
+            scale = F.softplus(scale_tmp)
+            likelihood_dist = DiscretizedLogistic(n_classes=self.pixel_range, loc=loc, scale=scale)
+            log_likelihood = likelihood_dist.log_prob(x)
+            assert log_likelihood.size() == x.size()
+            log_likelihood = log_likelihood.mean(dim=[1, 2, 3])
+            neg_log_likelihood = -log_likelihood
+            # Note negative loglikeliood
+            loss = neg_log_likelihood + codebook_loss + self.beta * commitment_loss
 
-        assert recon_loss.size() == codebook_loss.size() == commitment_loss.size()
+            # Logging purpose only
+            # Note loc_tmp is in range (-1, 1)
+            recon_loss = F.mse_loss(loc_tmp, (x - 128) / 128, reduction='none').mean(dim=[1, 2, 3])
+        else:
+            raise ValueError('Invalid losstype')
 
-        loss = recon_loss + codebook_loss + self.beta * commitment_loss
+
+
         log = {
             'loss': loss,
+            'neg_log_likelihood': neg_log_likelihood,
             'recon_loss': recon_loss,
             'codebook_loss': codebook_loss,
             'commitment_loss': commitment_loss
@@ -371,7 +488,7 @@ class VQVAE:
         embeddings = self.base.codebook(indices)
         # (B, D, H, W)
         embeddings = embeddings.permute(0, 3, 1, 2)
-        samples = self.base.decoder(embeddings) * 128 + 128
+        samples = self.base.decode_and_sample(embeddings)
         return samples
 
     @torch.no_grad()
