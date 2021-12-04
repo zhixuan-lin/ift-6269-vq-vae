@@ -33,11 +33,11 @@ def main():
     transform = transforms.Compose([transforms.ToTensor()])
     # Stupid code here
     # train_data = torchvision.datasets.CIFAR10(root=args.data_dir, train=True, download=True, transform=transform).data
-    test_data = torchvision.datasets.CIFAR10(root=args.data_dir, train=False, download=True, transform=transform).data
+    val_data = torchvision.datasets.CIFAR10(root=args.data_dir, train=True, download=True, transform=transform).data[40000:]
 
-    vqvae_base = VQVAEBase(beta=1., loss_type=args.loss_type)
+    vqvae_base = VQVAEBase(loss_type=args.loss_type)
     vqvae_base = vqvae_base.to(device)
-    vqvae_prior = VQVAEPrior(image_shape=(8, 8, 1), channel_ordered=False, n_colors=128, n_layers=8, n_filters=64)
+    vqvae_prior = VQVAEPrior(image_shape=(8, 8, 1), channel_ordered=False, n_colors=vqvae_base.num_embed, n_layers=8, n_filters=64)
     vqvae_prior = vqvae_prior.to(device)
 
 
@@ -51,6 +51,7 @@ def main():
 
 
     vqvae = VQVAE(base=vqvae_base, prior=vqvae_prior)
+    vqvae.eval()
     samples = vqvae.sample(args.num_samples)
     # samples = np.random.rand(100, 32, 32, 3)
 
@@ -62,16 +63,16 @@ def main():
     samples = samples.cpu().numpy().transpose(0, 2, 3, 1).astype(np.uint8)
 
     # Reconstruction
-    images = torch.from_numpy(test_data[:args.num_samples // 2].transpose(0, 3, 1, 2).astype(np.float32)).to(device)
+    images = torch.from_numpy(val_data[:args.num_samples // 2].transpose(0, 3, 1, 2).astype(np.float32)).to(device)
     recon = vqvae.reconstruct(images)
     recon = recon.cpu().numpy().transpose(0, 2, 3, 1)
 
     # Stack and reshape
     # (50, 2, H, W, C) -> (100, H, W, C)
-    # real_recon = np.concatenate((test_data[:args.num_samples // 2], recon), axis=0).astype(np.uint8)
+    # real_recon = np.concatenate((val_data[:args.num_samples // 2], recon), axis=0).astype(np.uint8)
     _, H, W, C = recon.shape
-    real_recon = np.stack((test_data[:args.num_samples // 2], recon), axis=1).astype(np.uint8).reshape(args.num_samples, H, W, C)
-    # save_results(samples, real_recon, vqvae_train_loss, vqvae_test_loss, prior_train_loss, prior_test_loss, result_dir=args.result_dir, show_figure=False)
+    real_recon = np.stack((val_data[:args.num_samples // 2], recon), axis=1).astype(np.uint8).reshape(args.num_samples, H, W, C)
+    # save_results(samples, real_recon, vqvae_train_loss, vqvae_val_loss, prior_train_loss, prior_val_loss, result_dir=args.result_dir, show_figure=False)
     # savefig(fname)
     show_samples(real_recon, title='Reconstructions', fname=osp.join(args.result_dir, 'reconstructions.png'), nrow=args.nrow)
     show_samples(samples, title='Samples', fname=osp.join(args.result_dir, 'samples.png'), nrow=args.nrow)

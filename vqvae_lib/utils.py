@@ -65,7 +65,17 @@ class Trainer:
             train_log.extend(self.train_one_epoch())
             test_log.append(self.validate())
             if (epoch + 1) % self.print_every == 0:
-                string = 'epoch: {}'.format(epoch + 1)
+                string = 'Train: epoch: {}'.format(epoch + 1)
+                string += ', iter: {}'.format((epoch + 1) * len(self.trainloader))
+                string += ', loss: {}'.format(np.mean(train_log['loss'][-100:]))
+                for k in sorted(train_log):
+                    if k == 'loss':
+                        continue
+                    string += ', {}: {:.4f}'.format(k, np.mean(train_log[k][-100:]))
+                print(string)
+
+                string = 'Val: epoch: {}'.format(epoch + 1)
+                string += ', iter: {}'.format((epoch + 1) * len(self.trainloader))
                 string += ', loss: {}'.format(test_log['loss'][-1])
                 for k in sorted(test_log):
                     if k == 'loss':

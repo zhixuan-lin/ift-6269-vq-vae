@@ -4,6 +4,7 @@ VQ-VAE. Two classes that you will use:
 - VQVAEPrior
 """
 import torch
+import math
 from torch import nn
 from torch.nn import functional as F
 from torch.distributions import TransformedDistribution, Uniform, SigmoidTransform, AffineTransform
@@ -58,26 +59,6 @@ class DiscretizedLogistic:
         logdiff = torch.where(x == (self.n_classes - 1), right_case, logdiff)
         return logdiff
     
-    # @torch.no_grad()
-    # def sample(self):
-    #     # This is wrong.
-    #     samples = Logistic(loc, scale).sample()
-    #     # samples = torch.floor(samples + 0.5).clamp(min=0., max=self.n_classes-1)
-    #     samples = samples.clamp(min=0., max=(self.n_classes - 1) / 256)
-    #     return samples
-
-    @torch.no_grad()
-    def _test(self):
-        to_eval = torch.arange(self.n_classes).long()
-        to_eval = to_eval.view(-1, *((1,) * self.loc.ndim))
-        # (N_class, *)
-        to_eval = to_eval.expand((self.n_classes,) + self.loc.size())
-        # (N_class, *)
-        probs = torch.exp(self.log_prob(to_eval))
-        a = (probs.sum(dim=0))
-        diff = (a - 1.0).abs().max()
-        print((a - 1.0).abs().max())
-        assert diff < 1e-5
 
 class LayerNorm(nn.LayerNorm):
     """You need this. Layernorm only handles last several dimensions."""
@@ -104,25 +85,31 @@ class LayerNorm(nn.LayerNorm):
 
 
 class ResBlock(nn.Module):
-    def __init__(self, nin, nout, stride=1):
+    """Note: this follows DeepMind implementation. 
+
+    A bit werid: relu at the start of forward, and no relu at the end.
+    """
+
+    def __init__(self, nin, nhidden, nout, stride=1):
         super().__init__()
-        self.conv1 = nn.Conv2d(nin, nout, 3, stride, 1)
+        self.conv1 = nn.Conv2d(nin, nhidden, 3, stride, 1)
         self.relu = nn.ReLU(inplace=True)
-        self.norm1 = LayerNorm(nout)
-        self.conv2 = nn.Conv2d(nout, nout, 3, 1, 1)
-        self.norm2 = LayerNorm(nout)
+        self.norm1 = nn.Identity()
+        self.conv2 = nn.Conv2d(nhidden, nout, 1, 1, 0)
+        self.norm2 = nn.Identity()
         self.downsample = None
         if stride != 1 or nin != nout:
             self.downsample = nn.Conv2d(nin, nout, 1, stride, 0)
 
     def forward(self, x):
         identity = x
+        x = self.relu(x)
         out = self.relu(self.norm1(self.conv1(x)))
         out = self.norm2(self.conv2(out))
         if self.downsample is not None:
             identity = self.downsample(identity)
         out += identity
-        out = self.relu(out)
+        # out = self.relu(out)
         return out
 
 class MaskedConv2d(nn.Conv2d):
@@ -300,112 +287,149 @@ class PixelCNN(nn.Module):
           # pbar.update(1)
       return data
 
-class VQVAEPrior(PixelCNN):
-    """Almost the same, but with an embedding layer"""
-    def __init__(self,  image_shape, channel_ordered, n_colors, n_layers, n_filters, embedding_dim=64):
-        super().__init__(image_shape, channel_ordered, n_colors, n_layers, n_filters)
-        self.embedding = nn.Embedding(num_embeddings=128, embedding_dim=embedding_dim)
-        self.in_conv = MaskedConv2d('A', channel_ordered, embedding_dim, n_filters, 3)
+# class VQVAEPrior(PixelCNN):
+#     """Almost the same as PixelCNN, but with an embedding layer"""
+#     def __init__(self,  image_shape, channel_ordered, n_colors, n_layers, n_filters, num_embeddings=512, embedding_dim=64):
+#         super().__init__(image_shape, channel_ordered, n_colors, n_layers, n_filters)
+#         self.embedding = nn.Embedding(num_embeddings=num_embeddings, embedding_dim=embedding_dim)
+#         self.in_conv = MaskedConv2d('A', channel_ordered, embedding_dim, n_filters, 3)
+#         self.num_embeddings = num_embeddings
       
-    def embed(self, x):
-        # (B, 1, H, W)
-        assert torch.all((0 <= x) & (x <= 127))
-        x = x.long().squeeze(dim=1)
-        # (B, H, W, D)
-        embeddings = self.embedding(x)
-        embeddings = embeddings.permute(0, 3, 1, 2)
-        return embeddings
+#     def embed(self, x):
+#         # (B, 1, H, W)
+#         assert torch.all((0 <= x) & (x <= self.num_embeddings - 1))
+#         x = x.long().squeeze(dim=1)
+#         # (B, H, W, D)
+#         embeddings = self.embedding(x)
+#         embeddings = embeddings.permute(0, 3, 1, 2)
+#         return embeddings
     
-    def compute_logits(self, x):
-        B, C, H, W = x.size()
-        x = self.embed(x)
+#     def compute_logits(self, x):
+#         B, C, H, W = x.size()
+#         x = self.embed(x)
         
-        x = self.relu(self.in_ln(self.in_conv(x)))
+#         x = self.relu(self.in_ln(self.in_conv(x)))
 
-        for ln, block in zip(self.block_lns, self.blocks):
-            x = self.relu(ln(block(x)))
-        x = self.output_layer1(x)
-        logits = self.output_layer(x)
+#         for ln, block in zip(self.block_lns, self.blocks):
+#             x = self.relu(ln(block(x)))
+#         x = self.output_layer1(x)
+#         logits = self.output_layer(x)
 
-        # (B, 4C, H, W) -> (B, C, 4, H, W)
-        # This step is to keep channels close. This matters for grouping in
-        # color conditioned case.
-        logits = logits.view(B, C, self.n_colors, H, W)
-        # (B, C, 4, H, W) -> (B, 4, C, H, W)
-        logits = logits.transpose(1, 2)
-        return logits
+#         # (B, 4C, H, W) -> (B, C, 4, H, W)
+#         # This step is to keep channels close. This matters for grouping in
+#         # color conditioned case.
+#         logits = logits.view(B, C, self.n_colors, H, W)
+#         # (B, C, 4, H, W) -> (B, 4, C, H, W)
+#         logits = logits.transpose(1, 2)
+#         return logits
 
-    def normalize(self, data):
-        raise NotImplementedError()
+#     def normalize(self, data):
+#         raise NotImplementedError()
+
+
+class Encoder(nn.Module):
+    def __init__(self, embed_dim, n_hidden, res_hidden):
+        super().__init__()
+        relu = nn.ReLU(inplace=True)
+        self.net = nn.Sequential(
+            nn.Conv2d(3, n_hidden // 2, 4, 2, 1), # 16 x 16
+            relu,
+            nn.Conv2d(n_hidden // 2, n_hidden, 4, 2, 1), # 8 x 8
+            relu,
+            nn.Conv2d(n_hidden, n_hidden, 3, 1, 1), # 8 x 8
+            # No relu here because ResBlock has it
+            ResBlock(n_hidden, res_hidden, n_hidden),
+            ResBlock(n_hidden, res_hidden, n_hidden),
+            relu,
+            nn.Conv2d(n_hidden, embed_dim, 1, 1, 0)
+        )
+
+    def forward(self, x):
+        return self.net(x)
+
+class Decoder(nn.Module):
+    def __init__(self, embed_dim, n_hidden, res_hidden, loss_type):
+        super().__init__()
+        output_dim = dict(
+            mse=3,
+            discretized_logistic=3 * 2
+        )[loss_type]
+
+        relu = nn.ReLU(inplace=True)
+        self.net = nn.Sequential(
+            nn.Conv2d(embed_dim, n_hidden, 3, 1, 1),
+            # No relu here because ResBlock has it
+            ResBlock(n_hidden, res_hidden, n_hidden),
+            ResBlock(n_hidden, res_hidden, n_hidden),
+            relu,
+            nn.ConvTranspose2d(n_hidden, n_hidden // 2, 4, 2, 1),
+            relu,
+            nn.ConvTranspose2d(n_hidden // 2, output_dim, 4, 2, 1),
+        )
+        self.loss_type = loss_type
+
+    def forward(self, z):
+        out = self.net(z)
+        return out
 
 class VQVAEBase(nn.Module):
-    def __init__(self, beta=0.25, loss_type='mse', pixel_range=256):
+    def __init__(self, beta=0.25, loss_type='mse', pixel_range=256, num_embed=512, embed_dim=64, vq_loss_weight=1.0, n_hidden=128, res_hidden=32):
         super().__init__()
         assert loss_type in ['mse', 'discretized_logistic']
         self.loss_type = loss_type
-        relu = nn.ReLU(inplace=True)
-        self.encoder = nn.Sequential(
-            nn.Conv2d(3, 256, 4, 2, 1), # 16 x 16
-            LayerNorm(256),
-            relu,
-            nn.Conv2d(256, 256, 4, 2, 1), # 8 x 8
-            LayerNorm(256),
-            relu,
-            ResBlock(256, 256),
-            ResBlock(256, 256),
-            nn.Conv2d(256, 256, 1, 1, 0)
-        )
-        if self.loss_type == 'mse':
-            self.decoder = nn.Sequential(
-                ResBlock(256, 256),
-                ResBlock(256, 256),
-                nn.ConvTranspose2d(256, 256, 4, 2, 1),
-                LayerNorm(256),
-                relu,
-                nn.ConvTranspose2d(256, 3, 4, 2, 1),
-                nn.Tanh()
-            )
-        elif self.loss_type == 'discretized_logistic':
-            self.decoder = nn.Sequential(
-                ResBlock(256, 256),
-                ResBlock(256, 256),
-                nn.ConvTranspose2d(256, 256, 4, 2, 1),
-                LayerNorm(256),
-                relu,
-                nn.ConvTranspose2d(256, 3 * 2, 4, 2, 1))
-        else:
-            raise ValueError('Invalid value for loss_type')
+        self.vq_loss_weight = vq_loss_weight
+        self.encoder = Encoder(embed_dim, n_hidden, res_hidden)
+        self.decoder = Decoder(embed_dim, n_hidden, res_hidden, loss_type)
 
         # (K, D)
-        self.codebook = nn.Embedding(128, 256)
-        self.codebook.weight.data.uniform_(-1 / 128, 1 / 128)
+        self.codebook = nn.Embedding(num_embed, embed_dim)
+        # See their sonnet's way of initialization
+        self.codebook.weight.data.uniform_(-math.sqrt(3 / embed_dim), math.sqrt(3 / embed_dim))
         self.beta = beta
         self.pixel_range = pixel_range
+        self.num_embed = num_embed
+        self.embed_dim = embed_dim
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, mode="fan_out", nonlinearity="relu")
 
     @property
     def device(self):
         return next(self.parameters()).device
+
+    @staticmethod
+    def normalize(x):
+        """
+        [0, 255] -> [-0.5, 0.5]
+        """
+        return (x / 255.0) - 0.5
+
+    @staticmethod
+    def unnormalize(x):
+        return (x + 0.5) * 255.0
 
     def encode(self, x):
         """
         x: (B, C, H, W), in range (0, 255)
         """
         # (B, D, 8, 8)
-        x = (x - 128) / 128
+        x = self.normalize(x)
         encoded = self.encoder(x)
         B, D, H, W = encoded.size()
-        encoded = encoded.view(B, D, H * W, 1)
-        # NN
-        weight = self.codebook.weight.view(1, D, 1, 128)
-        # (B, D, H*W, K) -> (B, H*W, K)
-        squared_distance = ((encoded - weight) ** 2).sum(dim=1)
-        # (B, H*W, K) -> (B, H, W)
-        indices = torch.argmin(squared_distance, dim=2).view(B, H, W)
+
+        # (B, D, H*W)
+        encoded_flat = encoded.view(B, D, H*W)
+        # (1, K, D)
+        weight = self.codebook.weight[None, ...]
+        # (B, 1, H*W) + (1, K, 1) + (1, K, D) % (B, D, H*W) = (B, K, H*W)
+        squared_dist = (encoded_flat ** 2).sum(dim=1, keepdim=True) + (weight ** 2).sum(dim=2, keepdim=True) - 2 * weight @ encoded_flat
+
+        # (B, K, H*W) -> (B, H, W)
+        indices = torch.argmin(squared_dist, dim=1).view(B, H, W)
         # (B, H, W, D)
         embeddings = self.codebook(indices)
         embeddings = embeddings.permute(0, 3, 1, 2)
-        encoded = encoded.view(B, D, H, W)
-        assert embeddings.size() == (B, D, H, W)
+        assert encoded.size() == embeddings.size() == (B, D, H, W)
         return indices, encoded, embeddings
 
     
@@ -416,7 +440,7 @@ class VQVAEBase(nn.Module):
 
     def decode_and_sample(self, embeddings, use_mean=True):
         params = self.decoder(embeddings)
-        return 128 * params[:, :3, :, :] + 128
+        return torch.clamp(self.unnormalize(params[:, :3, :, :]), min=0.5, max=self.pixel_range-0.5).floor()
 
     @torch.no_grad()
     def reconstruct(self, x):
@@ -432,17 +456,19 @@ class VQVAEBase(nn.Module):
         codebook_loss = F.mse_loss(embeddings, encoded.detach(), reduction='none').mean(dim=[1, 2, 3])
         commitment_loss = F.mse_loss(encoded, embeddings.detach(), reduction='none').mean(dim=[1, 2, 3])
         if self.loss_type == 'mse':
+            # data_variance = 0.06327039811675479
+            data_variance = 0.06336906706339507
             recon = self.decode(encoded, embeddings)
-            recon_loss = F.mse_loss(recon, (x - 128) / 128, reduction='none').mean(dim=[1, 2, 3])
-            loss = recon_loss + codebook_loss + self.beta * commitment_loss
+            recon_loss = F.mse_loss(recon, self.normalize(x), reduction='none').mean(dim=[1, 2, 3]) / data_variance
+            loss = recon_loss + self.vq_loss_weight * (codebook_loss + self.beta * commitment_loss)
             assert recon_loss.size() == codebook_loss.size() == commitment_loss.size()
             neg_log_likelihood = torch.zeros_like(loss)
         elif self.loss_type == 'discretized_logistic':
             params = self.decode(encoded, embeddings)
             # (B, 3, H, W), (B, 3, H, W)
             loc_tmp, scale_tmp = params.chunk(2, dim=1)
-            # Let loc_tmp stay in (-1, 1)
-            loc = 128 * loc_tmp + 128
+            # Let loc_tmp stay in (-0.5, 0.5)
+            loc = self.unnormalize(loc_tmp)
             scale = F.softplus(scale_tmp)
             likelihood_dist = DiscretizedLogistic(n_classes=self.pixel_range, loc=loc, scale=scale)
             log_likelihood = likelihood_dist.log_prob(x)
@@ -450,11 +476,11 @@ class VQVAEBase(nn.Module):
             log_likelihood = log_likelihood.mean(dim=[1, 2, 3])
             neg_log_likelihood = -log_likelihood
             # Note negative loglikeliood
-            loss = neg_log_likelihood + codebook_loss + self.beta * commitment_loss
+            loss = neg_log_likelihood + self.vq_loss_weight * (codebook_loss + self.beta * commitment_loss)
 
             # Logging purpose only
-            # Note loc_tmp is in range (-1, 1)
-            recon_loss = F.mse_loss(loc_tmp, (x - 128) / 128, reduction='none').mean(dim=[1, 2, 3])
+            # Note loc_tmp is in range (-0.5, 0.5)
+            recon_loss = F.mse_loss(loc_tmp, self.normalize(x), reduction='none').mean(dim=[1, 2, 3])
         else:
             raise ValueError('Invalid losstype')
 
@@ -471,9 +497,10 @@ class VQVAEBase(nn.Module):
 
 
 
-class VQVAE:
+class VQVAE(nn.Module):
     def __init__(self, base, prior):
         # (H, W, C)
+        super().__init__()
         self.base = base
         self.prior = prior
     
@@ -481,7 +508,7 @@ class VQVAE:
     def sample(self, n_samples):
         # (B, 1, H, W)
         indices = self.prior.sample(n_samples)
-        assert torch.all((0 <= indices) & (indices <= 128 - 1))
+        assert torch.all((0 <= indices) & (indices <= self.base.num_embed - 1))
         # (B, H, W)
         indices = indices.long().squeeze(dim=1)
         # (B, H, W, D)
