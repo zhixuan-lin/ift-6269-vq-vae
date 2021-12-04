@@ -114,7 +114,7 @@ class Trainer:
 def savefig(fname, show_figure=True):
     os.makedirs(osp.dirname(fname), exist_ok=True)
     plt.tight_layout()
-    plt.savefig(fname)
+    plt.savefig(fname, bbox_inches='tight')
     if show_figure:
         plt.show()
 

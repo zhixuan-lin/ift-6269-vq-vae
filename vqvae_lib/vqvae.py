@@ -431,12 +431,12 @@ class VQVAEBase(nn.Module):
         _, encoded, embeddings = self.encode(x)
         codebook_loss = F.mse_loss(embeddings, encoded.detach(), reduction='none').mean(dim=[1, 2, 3])
         commitment_loss = F.mse_loss(encoded, embeddings.detach(), reduction='none').mean(dim=[1, 2, 3])
-        neg_log_likelihood = None
         if self.loss_type == 'mse':
             recon = self.decode(encoded, embeddings)
             recon_loss = F.mse_loss(recon, (x - 128) / 128, reduction='none').mean(dim=[1, 2, 3])
             loss = recon_loss + codebook_loss + self.beta * commitment_loss
             assert recon_loss.size() == codebook_loss.size() == commitment_loss.size()
+            neg_log_likelihood = torch.zeros_like(loss)
         elif self.loss_type == 'discretized_logistic':
             params = self.decode(encoded, embeddings)
             # (B, 3, H, W), (B, 3, H, W)
