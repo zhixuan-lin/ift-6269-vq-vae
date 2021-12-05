@@ -1,4 +1,5 @@
 import os
+import csv
 import os.path as osp
 import torchvision
 import torch
@@ -8,6 +9,68 @@ from torchvision import transforms
 from torchvision.utils import make_grid
 import matplotlib.pyplot as plt
 import pathlib
+import logging
+from typing import Dict, Any, Optional
+
+class CSVWriter:
+    r"""
+    From Pytorch Lighting
+
+    Args:
+        log_dir: Directory for the experiment logs
+    """
+
+    NAME_HPARAMS_FILE = "hparams.yaml"
+    NAME_METRICS_FILE = "metrics.csv"
+
+    def __init__(self, log_dir: str) -> None:
+        self.hparams = {}
+        self.metrics = []
+
+        self.log_dir = log_dir
+        # if os.path.exists(self.log_dir) and os.listdir(self.log_dir):
+        #     logging.warn(
+        #         f"Experiment logs directory {self.log_dir} exists and is not empty."
+        #         " Previous log files in this directory will be deleted when the new ones are saved!"
+        #     )
+        os.makedirs(self.log_dir, exist_ok=True)
+
+        self.metrics_file_path = os.path.join(self.log_dir, self.NAME_METRICS_FILE)
+
+
+    def log_metrics(self, metrics_dict: Dict[str, float], step: Optional[int] = None) -> None:
+        """Record metrics."""
+
+        def _handle_value(value):
+            if isinstance(value, torch.Tensor):
+                return value.item()
+            return value
+
+        if step is None:
+            step = len(self.metrics)
+
+        metrics = {k: _handle_value(v) for k, v in metrics_dict.items()}
+        metrics["step"] = step
+        self.metrics.append(metrics)
+
+
+    def save(self) -> None:
+        """Save recorded hparams and metrics into files."""
+
+        if not self.metrics:
+            return
+
+        last_m = {}
+        for m in self.metrics:
+            last_m.update(m)
+        metrics_keys = list(last_m.keys())
+
+        with open(self.metrics_file_path, "w", newline="") as f:
+            # Don't assign the writer to self.
+            # Keeps an open reference and prevents pickling otherwise
+            writer = csv.DictWriter(f, fieldnames=metrics_keys)
+            writer.writeheader()
+            writer.writerows(self.metrics)
 
 
 class SingleTensorDataset(Dataset):
@@ -55,6 +118,7 @@ class Trainer:
         print_every=1,
         grad_clip=None,
         summary_writer=None,
+        csv_writer=None,
         log_every_n_steps=5,
     ):
       self.model = model
@@ -68,6 +132,7 @@ class Trainer:
       self.global_step = 0
       self.summary_writer = summary_writer
       self.log_every_n_steps = log_every_n_steps
+      self.csv_writer = csv_writer
 
     def train(self):
         val_log = ArrayDict()
@@ -98,15 +163,18 @@ class Trainer:
                 print(string)
                 # print('Epoch: {}, Loss: {}, -Elbo: {}, KL: {}'.format(epoch + 1, val_log['loss'][-1], val_log['neg_elbo'][-1], val_log['kl'][-1]))
 
-            if self.summary_writer is not None:
-                # Logging to file
                 things_to_write = {}
                 for key in val_log:
                     things_to_write[f'val/{key}_epoch'] = val_log[key][-1]
                 for key in train_log:
                     things_to_write[f'train/{key}_epoch'] = np.mean(train_log[key][-100:])
+            # Logging to file
+            if self.summary_writer is not None:
                 for key in things_to_write:
                     self.summary_writer.add_scalar(key, things_to_write[key], epoch + 1)
+            if self.csv_writer is not None:
+                self.csv_writer.log_metrics(things_to_write, step=epoch + 1)
+                self.csv_writer.save()
 
         return train_log, val_log
 

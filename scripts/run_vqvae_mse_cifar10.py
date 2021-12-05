@@ -21,13 +21,14 @@ def main():
     val_dataset = SingleTensorDataset(to_tensor(val_data))
 
     train_vqvae(
+        image_size=32,
         train_dataset=train_dataset,
         val_dataset=val_dataset,
         result_dir=args.result_dir,
         exp_name='vqvae_mse_cifar10',
         loss_type='mse',
-        epochs=40,
-        prior_epochs=100
+        epochs=100,
+        prior_epochs=100,
     )
     # train_data, val_data = np.zeros((100, 32, 32, 3)), np.zeros((10000, 32, 32, 3))
 

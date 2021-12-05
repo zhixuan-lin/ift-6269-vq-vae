@@ -290,6 +290,45 @@ class PixelCNN(nn.Module):
           # pbar.update(1)
       return data
 
+class VQVAEPrior(PixelCNN):
+    """Almost the same as PixelCNN, but with an embedding layer"""
+    def __init__(self,  image_shape, channel_ordered, n_colors, n_layers, n_filters, num_embeddings=512, embedding_dim=64):
+        super().__init__(image_shape, channel_ordered, n_colors, n_layers, n_filters)
+        self.embedding = nn.Embedding(num_embeddings=num_embeddings, embedding_dim=embedding_dim)
+        self.in_conv = MaskedConv2d('A', channel_ordered, embedding_dim, n_filters, 3)
+        self.num_embeddings = num_embeddings
+      
+    def embed(self, x):
+        # (B, 1, H, W)
+        assert torch.all((0 <= x) & (x <= self.num_embeddings - 1))
+        x = x.long().squeeze(dim=1)
+        # (B, H, W, D)
+        embeddings = self.embedding(x)
+        embeddings = embeddings.permute(0, 3, 1, 2)
+        return embeddings
+    
+    def compute_logits(self, x):
+        B, C, H, W = x.size()
+        x = self.embed(x)
+        
+        x = self.relu(self.in_ln(self.in_conv(x)))
+
+        for ln, block in zip(self.block_lns, self.blocks):
+            x = self.relu(ln(block(x)))
+        x = self.output_layer1(x)
+        logits = self.output_layer(x)
+
+        # (B, 4C, H, W) -> (B, C, 4, H, W)
+        # This step is to keep channels close. This matters for grouping in
+        # color conditioned case.
+        logits = logits.view(B, C, self.n_colors, H, W)
+        # (B, C, 4, H, W) -> (B, 4, C, H, W)
+        logits = logits.transpose(1, 2)
+        return logits
+
+    def normalize(self, data):
+        raise NotImplementedError()
+
 
 
 class Encoder(nn.Module):

@@ -20,13 +20,15 @@ def main():
     train_dataset = SingleTensorDataset(to_tensor(train_data))
     val_dataset = SingleTensorDataset(to_tensor(val_data))
 
+    # Adapt to other dataset: change image_size, train_dataset and val_dataset
     train_vqvae(
+        image_size=32,
         train_dataset=train_dataset,
         val_dataset=val_dataset,
         result_dir=args.result_dir,
-        exp_name='vqvae_mse_cifar10',
+        exp_name='vqvae_dl_cifar10',
         loss_type='discretized_logistic',
-        epochs=40,
+        epochs=100,
         prior_epochs=100,
         vq_loss_weight=10.0,
     )

@@ -8,8 +8,8 @@ import numpy as np
 from torch.utils.data import DataLoader, Dataset
 from torchvision import transforms
 from torchvision.utils import make_grid
-from vqvae_lib.vqvae import VQVAE, VQVAEBase, create_indices_dataset, PixelCNN
-from vqvae_lib.utils import Trainer, save_results, attach_run_id
+from vqvae_lib.vqvae import VQVAE, VQVAEBase, create_indices_dataset, VQVAEPrior
+from vqvae_lib.utils import Trainer, save_results, attach_run_id, CSVWriter
 import matplotlib.pyplot as plt
 import pathlib
 from torch.utils.tensorboard import SummaryWriter
@@ -18,13 +18,14 @@ from pathlib import Path
 
 
 def train_vqvae(
+    image_size=32,
     train_dataset: Dataset = None,
     val_dataset: Dataset = None,
     result_dir='./results',
     exp_name='run',
     loss_type='mse',
     device='auto',
-    lr=1e-3,
+    lr=3e-4,
     prior_lr=1e-3,
     beta=0.25,
     vq_loss_weight=1.0,
@@ -43,6 +44,9 @@ def train_vqvae(
     if device =='auto':
         device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
     summary_writer = SummaryWriter(log_dir=osp.join(result_dir, exp_name))
+    csv_writer = CSVWriter(log_dir=osp.join(result_dir, exp_name))
+    prior_summary_writer = SummaryWriter(log_dir=osp.join(result_dir, exp_name, 'prior'))
+    prior_csv_writer = CSVWriter(log_dir=osp.join(result_dir, exp_name, 'prior'))
 
 
 
@@ -51,16 +55,17 @@ def train_vqvae(
     valloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
     vqvae_base = VQVAEBase(beta=beta, loss_type=loss_type, vq_loss_weight=vq_loss_weight, num_embed=num_embed, embed_dim=embed_dim, n_hidden=n_hidden, res_hidden=res_hidden)
     vqvae_base = vqvae_base.to(device)
-    vqvae_trainer = Trainer(vqvae_base, trainloader, valloader, lr, device, epochs, print_every=1, grad_clip=None, summary_writer=summary_writer)
+    vqvae_trainer = Trainer(vqvae_base, trainloader, valloader, lr, device, epochs, print_every=1, grad_clip=None, summary_writer=summary_writer, csv_writer=csv_writer)
     vqvae_train_log, vqvae_val_log = vqvae_trainer.train()
 
     prior_train_data = create_indices_dataset(trainloader, vqvae_base, device)
     prior_val_data = create_indices_dataset(valloader, vqvae_base, device)
     prior_trainloader = DataLoader(prior_train_data, batch_size=batch_size, shuffle=True)
     prior_valloader = DataLoader(prior_val_data, batch_size=batch_size, shuffle=False)
-    vqvae_prior = PixelCNN(image_shape=(8, 8, 1), channel_ordered=False, n_colors=num_embed, n_layers=8, n_filters=64)
+    latent_size = image_size // 4
+    vqvae_prior = VQVAEPrior(image_shape=(latent_size, latent_size, 1), channel_ordered=False, n_colors=num_embed, n_layers=8, n_filters=64)
     vqvae_prior = vqvae_prior.to(device)
-    prior_trainer = Trainer(vqvae_prior, prior_trainloader, prior_valloader, prior_lr, device, prior_epochs, print_every=1)
+    prior_trainer = Trainer(vqvae_prior, prior_trainloader, prior_valloader, prior_lr, device, prior_epochs, print_every=1, summary_writer=prior_summary_writer, csv_writer=prior_csv_writer)
     prior_train_log, prior_val_log = prior_trainer.train()
 
 
