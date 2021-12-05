@@ -451,7 +451,7 @@ class VQVAEBase(nn.Module):
             nll_output = recon_loss / self.data_variance + math.log(2 * math.pi * self.data_variance)
             # p(x|z) + p(z). Uniform p(z). log p(z) is just n_latent (8 * 8) times log (num_embed)
             nll_lb = nll_output + np.prod(indices[1:].size()) * math.log(self.num_embed) / np.prod(x[1:].size())
-            bits_per_dim = nll_lb * math.log(2)
+            bits_per_dim = nll_lb / math.log(2)
             log.update({
                 'loss': loss,
                 'recon_loss': recon_loss,
@@ -483,7 +483,7 @@ class VQVAEBase(nn.Module):
             # Lowerbound of marginal likelihood
             nll_lb = nll_output + np.prod(indices[1:].size()) * math.log(self.num_embed) / np.prod(x[1:].size())
 
-            bits_per_dim = nll_lb * math.log(2)
+            bits_per_dim = nll_lb / math.log(2)
             log.update({
                 'loss': loss,
                 'recon_loss': recon_loss,
