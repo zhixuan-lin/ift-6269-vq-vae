@@ -3,10 +3,21 @@ import os.path as osp
 import torchvision
 import torch
 import numpy as np
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, TensorDataset, Dataset
 from torchvision import transforms
 from torchvision.utils import make_grid
 import matplotlib.pyplot as plt
+import pathlib
+
+
+class SingleTensorDataset(Dataset):
+    def __init__(self, tensor):
+        self.tensor = tensor
+    def __getitem__(self, index):
+        return self.tensor[index]
+    def __len__(self):
+        return self.tensor.size(0)
+
 
 class ArrayDict(dict):
   def append(self, x):
@@ -42,7 +53,9 @@ class Trainer:
         device,
         max_epochs,
         print_every=1,
-        grad_clip=None
+        grad_clip=None,
+        summary_writer=None,
+        log_every_n_steps=5,
     ):
       self.model = model
       self.trainloader = trainloader
@@ -52,18 +65,19 @@ class Trainer:
       self.max_epochs = max_epochs
       self.print_every = print_every
       self.grad_clip = grad_clip
-
-
+      self.global_step = 0
+      self.summary_writer = summary_writer
+      self.log_every_n_steps = log_every_n_steps
 
     def train(self):
-        test_log = ArrayDict()
+        val_log = ArrayDict()
         train_log = ArrayDict()
-        test_log.append(self.validate())
-        print('Initial loss:', test_log['loss'])
+        val_log.append(self.validate())
+        print('Initial loss:', val_log['loss'])
         for epoch in range(self.max_epochs):
  
             train_log.extend(self.train_one_epoch())
-            test_log.append(self.validate())
+            val_log.append(self.validate())
             if (epoch + 1) % self.print_every == 0:
                 string = 'Train: epoch: {}'.format(epoch + 1)
                 string += ', iter: {}'.format((epoch + 1) * len(self.trainloader))
@@ -76,19 +90,30 @@ class Trainer:
 
                 string = 'Val: epoch: {}'.format(epoch + 1)
                 string += ', iter: {}'.format((epoch + 1) * len(self.trainloader))
-                string += ', loss: {}'.format(test_log['loss'][-1])
-                for k in sorted(test_log):
+                string += ', loss: {}'.format(val_log['loss'][-1])
+                for k in sorted(val_log):
                     if k == 'loss':
                         continue
-                    string += ', {}: {:.4f}'.format(k, test_log[k][-1])
+                    string += ', {}: {:.4f}'.format(k, val_log[k][-1])
                 print(string)
-                # print('Epoch: {}, Loss: {}, -Elbo: {}, KL: {}'.format(epoch + 1, test_log['loss'][-1], test_log['neg_elbo'][-1], test_log['kl'][-1]))
+                # print('Epoch: {}, Loss: {}, -Elbo: {}, KL: {}'.format(epoch + 1, val_log['loss'][-1], val_log['neg_elbo'][-1], val_log['kl'][-1]))
 
-        return train_log, test_log
+            if self.summary_writer is not None:
+                # Logging to file
+                things_to_write = {}
+                for key in val_log:
+                    things_to_write[f'val/{key}_epoch'] = val_log[key][-1]
+                for key in train_log:
+                    things_to_write[f'train/{key}_epoch'] = np.mean(train_log[key][-100:])
+                for key in things_to_write:
+                    self.summary_writer.add_scalar(key, things_to_write[key], epoch + 1)
+
+        return train_log, val_log
 
     def train_one_epoch(self):
         logs = ArrayDict()
         for iteration, data in enumerate(self.trainloader):
+            self.global_step += 1
             self.model.train()
             data = data.to(self.device)
             # with torch.autograd.detect_anomaly():
@@ -102,6 +127,11 @@ class Trainer:
             # Mean within batch
             log = {k: v.mean().item() for (k, v) in log.items()}
             logs.append(log)
+
+            if self.summary_writer and self.global_step % self.log_every_n_steps == 0:
+                for key in log:
+                    self.summary_writer.add_scalar(f'train/{key}_step', log[key], self.global_step)
+
         return logs
 
 
@@ -114,12 +144,26 @@ class Trainer:
             data = data.to(self.device)
             loss, log = self.model(data)
             log = {k: log[k].cpu().numpy() for k in log}
-            logs.extend(log)
+            logs.append(log)
         # Mean over all data
         assert all([v.ndim == 1 for v in logs.values()])
         logs = {k: logs[k].mean() for k in logs}
         return logs
     
+
+
+def attach_run_id(path, exp_name):
+    # From stable-baselines-3
+    max_run_id = 0
+    path = pathlib.Path(path)
+    for dir_path in path.glob(f'{exp_name}_[0-9]*'):
+        prefix, _, suffix = dir_path.name.rpartition('_')
+        if prefix == exp_name and suffix.isdigit() and int(suffix) > max_run_id:
+            max_run_id = int(suffix)
+    return f'{exp_name}_{max_run_id + 1}'
+
+
+
 # from  https://github.com/rll/deepul/blob/master/deepul/utils.py
 def savefig(fname, show_figure=True):
     os.makedirs(osp.dirname(fname), exist_ok=True)

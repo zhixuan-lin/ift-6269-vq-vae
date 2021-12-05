@@ -10,7 +10,7 @@ pip install -r requirements.txt
 
 ## Run
 
-`python vqvae_lib/main.py`
+`python scripts/run_vqvae_dl_cifar10.py`
 
 ## Using Colab
 

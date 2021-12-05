@@ -8,6 +8,7 @@ import math
 from torch import nn
 from torch.nn import functional as F
 from torch.distributions import TransformedDistribution, Uniform, SigmoidTransform, AffineTransform
+import numpy as np
 
 def logsigmoid_diff(a, b):
     """Implements log(sig(a) - sig(b)), in a numerically stable way.
@@ -103,12 +104,14 @@ class ResBlock(nn.Module):
 
     def forward(self, x):
         identity = x
+        # Note there is a relu
         x = self.relu(x)
         out = self.relu(self.norm1(self.conv1(x)))
         out = self.norm2(self.conv2(out))
         if self.downsample is not None:
             identity = self.downsample(identity)
         out += identity
+        # Note there is not relu
         # out = self.relu(out)
         return out
 
@@ -287,48 +290,10 @@ class PixelCNN(nn.Module):
           # pbar.update(1)
       return data
 
-# class VQVAEPrior(PixelCNN):
-#     """Almost the same as PixelCNN, but with an embedding layer"""
-#     def __init__(self,  image_shape, channel_ordered, n_colors, n_layers, n_filters, num_embeddings=512, embedding_dim=64):
-#         super().__init__(image_shape, channel_ordered, n_colors, n_layers, n_filters)
-#         self.embedding = nn.Embedding(num_embeddings=num_embeddings, embedding_dim=embedding_dim)
-#         self.in_conv = MaskedConv2d('A', channel_ordered, embedding_dim, n_filters, 3)
-#         self.num_embeddings = num_embeddings
-      
-#     def embed(self, x):
-#         # (B, 1, H, W)
-#         assert torch.all((0 <= x) & (x <= self.num_embeddings - 1))
-#         x = x.long().squeeze(dim=1)
-#         # (B, H, W, D)
-#         embeddings = self.embedding(x)
-#         embeddings = embeddings.permute(0, 3, 1, 2)
-#         return embeddings
-    
-#     def compute_logits(self, x):
-#         B, C, H, W = x.size()
-#         x = self.embed(x)
-        
-#         x = self.relu(self.in_ln(self.in_conv(x)))
-
-#         for ln, block in zip(self.block_lns, self.blocks):
-#             x = self.relu(ln(block(x)))
-#         x = self.output_layer1(x)
-#         logits = self.output_layer(x)
-
-#         # (B, 4C, H, W) -> (B, C, 4, H, W)
-#         # This step is to keep channels close. This matters for grouping in
-#         # color conditioned case.
-#         logits = logits.view(B, C, self.n_colors, H, W)
-#         # (B, C, 4, H, W) -> (B, 4, C, H, W)
-#         logits = logits.transpose(1, 2)
-#         return logits
-
-#     def normalize(self, data):
-#         raise NotImplementedError()
 
 
 class Encoder(nn.Module):
-    def __init__(self, embed_dim, n_hidden, res_hidden):
+    def __init__(self, embed_dim, n_hidden, res_hidden, loss_type):
         super().__init__()
         relu = nn.ReLU(inplace=True)
         self.net = nn.Sequential(
@@ -352,7 +317,7 @@ class Decoder(nn.Module):
         super().__init__()
         output_dim = dict(
             mse=3,
-            discretized_logistic=3 * 2
+            discretized_logistic=3 * 2  # For loc and scale
         )[loss_type]
 
         relu = nn.ReLU(inplace=True)
@@ -373,12 +338,12 @@ class Decoder(nn.Module):
         return out
 
 class VQVAEBase(nn.Module):
-    def __init__(self, beta=0.25, loss_type='mse', pixel_range=256, num_embed=512, embed_dim=64, vq_loss_weight=1.0, n_hidden=128, res_hidden=32):
+    def __init__(self, beta=0.25, loss_type='mse', pixel_range=256, num_embed=512, embed_dim=64, vq_loss_weight=1.0, n_hidden=128, res_hidden=32, data_variance=0.06327039811675479):
         super().__init__()
         assert loss_type in ['mse', 'discretized_logistic']
         self.loss_type = loss_type
         self.vq_loss_weight = vq_loss_weight
-        self.encoder = Encoder(embed_dim, n_hidden, res_hidden)
+        self.encoder = Encoder(embed_dim, n_hidden, res_hidden, loss_type)
         self.decoder = Decoder(embed_dim, n_hidden, res_hidden, loss_type)
 
         # (K, D)
@@ -389,6 +354,7 @@ class VQVAEBase(nn.Module):
         self.pixel_range = pixel_range
         self.num_embed = num_embed
         self.embed_dim = embed_dim
+        self.data_variance = data_variance
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
                 nn.init.kaiming_normal_(m.weight, mode="fan_out", nonlinearity="relu")
@@ -406,22 +372,31 @@ class VQVAEBase(nn.Module):
 
     @staticmethod
     def unnormalize(x):
+        """
+        [-0.5, 0.5] -> [0, 255]
+        """
         return (x + 0.5) * 255.0
 
     def encode(self, x):
         """
         x: (B, C, H, W), in range (0, 255)
+        encoded: before quantization
+        embeddings: after quantization
         """
-        # (B, D, 8, 8)
         x = self.normalize(x)
+        # (B, D, 8, 8)
         encoded = self.encoder(x)
+        indices, embeddings = self.quantize(encoded)
+        return indices, encoded, embeddings
+
+    def quantize(self, encoded):
         B, D, H, W = encoded.size()
 
         # (B, D, H*W)
         encoded_flat = encoded.view(B, D, H*W)
         # (1, K, D)
         weight = self.codebook.weight[None, ...]
-        # (B, 1, H*W) + (1, K, 1) + (1, K, D) % (B, D, H*W) = (B, K, H*W)
+        # (B, 1, H*W) + (1, K, 1) + (1, K, D) @ (B, D, H*W) = (B, K, H*W)
         squared_dist = (encoded_flat ** 2).sum(dim=1, keepdim=True) + (weight ** 2).sum(dim=2, keepdim=True) - 2 * weight @ encoded_flat
 
         # (B, K, H*W) -> (B, H, W)
@@ -430,69 +405,98 @@ class VQVAEBase(nn.Module):
         embeddings = self.codebook(indices)
         embeddings = embeddings.permute(0, 3, 1, 2)
         assert encoded.size() == embeddings.size() == (B, D, H, W)
-        return indices, encoded, embeddings
+        return indices, embeddings
 
     
     def decode(self, encoded, embeddings):
+        """Used in training"""
         # ST gradient. Value is embeddings, but grad flows to encoded.
         input = encoded + (embeddings - encoded).detach()
         return self.decoder(input)
 
-    def decode_and_sample(self, embeddings, use_mean=True):
+    @torch.no_grad()
+    def decode_and_unnormalize(self, embeddings):
+        """Only used in validation"""
         params = self.decoder(embeddings)
         return torch.clamp(self.unnormalize(params[:, :3, :, :]), min=0.5, max=self.pixel_range-0.5).floor()
 
     @torch.no_grad()
     def reconstruct(self, x):
         _, _, embeddings = self.encode(x)
-        return self.decode_and_sample(embeddings)
+        return self.decode_and_unnormalize(embeddings)
 
     def forward(self, x):
         """
         Important: assume x is in [0, 255]
         """
         
-        _, encoded, embeddings = self.encode(x)
-        codebook_loss = F.mse_loss(embeddings, encoded.detach(), reduction='none').mean(dim=[1, 2, 3])
-        commitment_loss = F.mse_loss(encoded, embeddings.detach(), reduction='none').mean(dim=[1, 2, 3])
+        log = {}
+        indices, encoded, embeddings = self.encode(x)
+        codebook_loss = F.mse_loss(embeddings, encoded.detach())
+        commitment_loss = F.mse_loss(encoded, embeddings.detach())
+
+        log.update(dict(
+            codebook_loss=codebook_loss,
+            commitment_loss=commitment_loss
+        ))
+
         if self.loss_type == 'mse':
-            # data_variance = 0.06327039811675479
-            data_variance = 0.06336906706339507
             recon = self.decode(encoded, embeddings)
-            recon_loss = F.mse_loss(recon, self.normalize(x), reduction='none').mean(dim=[1, 2, 3]) / data_variance
-            loss = recon_loss + self.vq_loss_weight * (codebook_loss + self.beta * commitment_loss)
+            recon_loss = F.mse_loss(recon, self.normalize(x))
+            # TODO: Loss scaling:
+            loss = recon_loss / self.data_variance + self.vq_loss_weight * (codebook_loss + self.beta * commitment_loss)
             assert recon_loss.size() == codebook_loss.size() == commitment_loss.size()
-            neg_log_likelihood = torch.zeros_like(loss)
+            # Following are logging code. No need to read.
+            # This is not meaningful. Doing it here anyway. p(x|z)
+            nll_output = recon_loss / self.data_variance + math.log(2 * math.pi * self.data_variance)
+            # p(x|z) + p(z). Uniform p(z). log p(z) is just n_latent (8 * 8) times log (num_embed)
+            nll_lb = nll_output + np.prod(indices[1:].size()) * math.log(self.num_embed) / np.prod(x[1:].size())
+            bits_per_dim = nll_lb * math.log(2)
+            log.update({
+                'loss': loss,
+                'recon_loss': recon_loss,
+                'recon_loss_scaled': recon_loss / self.data_variance,
+                # This is not meaningful. Doing it here anyway. p(x|z)
+                'nll_output': nll_output,
+                # Including p(z) or KL. Uniform prior used.
+                'nll_lb': nll_lb,
+                'bits_per_dim': bits_per_dim,
+            })
         elif self.loss_type == 'discretized_logistic':
             params = self.decode(encoded, embeddings)
             # (B, 3, H, W), (B, 3, H, W)
             loc_tmp, scale_tmp = params.chunk(2, dim=1)
-            # Let loc_tmp stay in (-0.5, 0.5)
+            # Let loc_tmp stay in (-0.5, 0.5). loc in [0, 255]
             loc = self.unnormalize(loc_tmp)
             scale = F.softplus(scale_tmp)
             likelihood_dist = DiscretizedLogistic(n_classes=self.pixel_range, loc=loc, scale=scale)
-            log_likelihood = likelihood_dist.log_prob(x)
-            assert log_likelihood.size() == x.size()
-            log_likelihood = log_likelihood.mean(dim=[1, 2, 3])
-            neg_log_likelihood = -log_likelihood
+            nll_output = -likelihood_dist.log_prob(x)
+            assert nll_output.size() == x.size()
+            nll_output = nll_output.mean()
             # Note negative loglikeliood
-            loss = neg_log_likelihood + self.vq_loss_weight * (codebook_loss + self.beta * commitment_loss)
+            loss = nll_output + self.vq_loss_weight * (codebook_loss + self.beta * commitment_loss)
 
             # Logging purpose only
             # Note loc_tmp is in range (-0.5, 0.5)
-            recon_loss = F.mse_loss(loc_tmp, self.normalize(x), reduction='none').mean(dim=[1, 2, 3])
+            recon_loss = F.mse_loss(loc_tmp, self.normalize(x))
+
+            # Lowerbound of marginal likelihood
+            nll_lb = nll_output + np.prod(indices[1:].size()) * math.log(self.num_embed) / np.prod(x[1:].size())
+
+            bits_per_dim = nll_lb * math.log(2)
+            log.update({
+                'loss': loss,
+                'recon_loss': recon_loss,
+                'recon_loss_scaled': recon_loss / self.data_variance,
+                'nll_output': nll_output,
+                'nll_lb': nll_lb,
+                'bits_per_dim': bits_per_dim,
+            })
         else:
             raise ValueError('Invalid losstype')
 
 
 
-        log = {
-            'loss': loss,
-            'neg_log_likelihood': neg_log_likelihood,
-            'recon_loss': recon_loss,
-            'codebook_loss': codebook_loss,
-            'commitment_loss': commitment_loss
-        }
         return loss, log
 
 
@@ -515,7 +519,7 @@ class VQVAE(nn.Module):
         embeddings = self.base.codebook(indices)
         # (B, D, H, W)
         embeddings = embeddings.permute(0, 3, 1, 2)
-        samples = self.base.decode_and_sample(embeddings)
+        samples = self.base.decode_and_unnormalize(embeddings)
         return samples
 
     @torch.no_grad()
