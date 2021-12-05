@@ -9,8 +9,8 @@ import numpy as np
 
 """General Instructions:
 You should first understand VQVAEBase, VQVAEPrior and VQVAE in vqvae.py
+For both baselines, you should use the encoder and decoder defined in vqvae.py.
 For VanillaVAE:
-    You should use the encoder and decoder defined in vqvae.py.
     However, the latent variable should be 1-D. The length should be equal to
         (image_size // 4). For CIFAR10, this is 8 * 8 = 64.
     So you need an additional linear layer for encoder and decoder.

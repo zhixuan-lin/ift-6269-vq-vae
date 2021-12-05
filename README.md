@@ -26,6 +26,8 @@ View tensorboard:
 tensorboard --logdir $RESULT_DIR --port 8848 --bind_all
 ```
 
+After the run is finished, you can find reconstruction and samples in `$RESULT_DIR/vqvae_dl_cifar10_{run_id}`
+
 Similar for `run_vqvae_mse_cifar10.py`.
 
 
