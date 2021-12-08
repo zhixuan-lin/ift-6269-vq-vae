@@ -1,5 +1,8 @@
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, TensorDataset
+from torchvision.datasets import ImageFolder
 from pathlib import Path
+from tqdm import tqdm
+import torchvision
 import torch
 import urllib.request
 import ssl
@@ -50,20 +53,30 @@ class TinyImagenet(Dataset):
     def __init__(self, data_dir: str, dataset_type: str) -> None:
         super().__init__()
 
-        import pdb; pdb.set_trace()
         data_dir = Path(data_dir)
-        self._download(data_dir)
+        downloaded_dir = self._download(data_dir)
 
         assert dataset_type in TinyImagenet._DATASET_TYPES
 
-        self.data = ImageFolder(data_dir / dataset_type)
+        transform = torchvision.transforms.Compose([
+            torchvision.transforms.PILToTensor(),
+            torchvision.transforms.Lambda(lambda x: x.to(dtype=torch.float32))
+        ])
+
+        data = ImageFolder(
+            downloaded_dir / dataset_type,
+            transform=transform
+        )
+
+        data = torch.stack([img[0] for img in data])
+        self.data = TensorDataset(data)
 
     def _download(self, data_dir: Path) -> None:
         url = 'http://cs231n.stanford.edu/tiny-imagenet-200.zip'
 
         filename = data_dir / url.rpartition('/')[2]
         if self._is_already_downloaded(filename):
-            return
+            return filename.parent / filename.name.split('.')[0]
 
         data_dir.mkdir(exist_ok=True)
         zip_file_path = Path(download_url(url, data_dir))
@@ -74,7 +87,7 @@ class TinyImagenet(Dataset):
         with zipfile.ZipFile(zip_file_path, 'r') as zip_ref:
             zip_ref.extractall(zip_file_dir)
 
-        return
+        return zip_file_dir
 
     def _is_already_downloaded(self, data_dir: Path) -> bool:
         actual_dir = data_dir.parent / data_dir.name.split('.')[0]
@@ -87,7 +100,7 @@ class TinyImagenet(Dataset):
         ))
 
     def __getitem__(self, idx):
-        return self.data[idx]
+        return self.data[idx][0]
 
     def __len__(self):
         return len(self.data)
