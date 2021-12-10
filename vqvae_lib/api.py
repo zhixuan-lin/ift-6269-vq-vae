@@ -114,7 +114,7 @@ def train_vanilla_vae(
     image_size=32,
     train_dataset: Dataset = None,
     val_dataset: Dataset = None,
-    result_dir='./results',
+    result_dir='./results/vanilla',
     exp_name='run',
     loss_type='mse',
     device='auto',
@@ -132,8 +132,8 @@ def train_vanilla_vae(
     exp_name = attach_run_id(result_dir, exp_name)
     if device =='auto':
         device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
-    summary_writer = SummaryWriter(log_dir=osp.join(result_dir, exp_name, 'vanilla'))
-    csv_writer = CSVWriter(log_dir=osp.join(result_dir, exp_name, 'vanilla'))
+    summary_writer = SummaryWriter(log_dir=osp.join(result_dir, exp_name))
+    csv_writer = CSVWriter(log_dir=osp.join(result_dir, exp_name))
 
     trainloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
     valloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
@@ -146,7 +146,7 @@ def train_vanilla_vae(
     vanilla_vae_val_loss = vanilla_vae_val_log['loss']
 
     # valing simple model saving and loading
-    save_path = osp.join(result_dir, exp_name, 'vanilla', 'model.pth')
+    save_path = osp.join(result_dir, exp_name, 'model.pth')
     torch.save(dict(vanilla_vae=vanilla_vae.state_dict()), save_path)
     checkpoint = torch.load(save_path, map_location=device)
     vanilla_vae.load_state_dict(checkpoint['vanilla_vae'])
@@ -165,14 +165,14 @@ def train_vanilla_vae(
     _, C, H, W = recon.shape
     real_recon = torch.stack((images, recon), axis=1).view(100, C, H, W)
     real_recon = real_recon.permute(0, 2, 3, 1).cpu().numpy().astype(np.uint8)
-    save_results(samples, real_recon, vanilla_vae_train_loss, vanilla_vae_val_loss, prior_train_loss=None, prior_val_loss=None, result_dir=osp.join(result_dir, exp_name, 'vanilla'), show_figure=False)
+    save_results(samples, real_recon, vanilla_vae_train_loss, vanilla_vae_val_loss, prior_train_loss=None, prior_val_loss=None, result_dir=osp.join(result_dir, exp_name), show_figure=False)
 
 
 def train_gsvae(
     image_size=32,
     train_dataset: Dataset = None,
     val_dataset: Dataset = None,
-    result_dir='./results',
+    result_dir='./results/gumbel',
     exp_name='run',
     loss_type='mse',
     device='auto',
@@ -196,10 +196,10 @@ def train_gsvae(
     exp_name = attach_run_id(result_dir, exp_name)
     if device =='auto':
         device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
-    summary_writer = SummaryWriter(log_dir=osp.join(result_dir, exp_name, 'gumbel'))
-    csv_writer = CSVWriter(log_dir=osp.join(result_dir, exp_name, 'gumbel'))
-    prior_summary_writer = SummaryWriter(log_dir=osp.join(result_dir, exp_name, 'gumbel', 'prior'))
-    prior_csv_writer = CSVWriter(log_dir=osp.join(result_dir, exp_name, 'gumbel', 'prior'))
+    summary_writer = SummaryWriter(log_dir=osp.join(result_dir, exp_name))
+    csv_writer = CSVWriter(log_dir=osp.join(result_dir, exp_name))
+    prior_summary_writer = SummaryWriter(log_dir=osp.join(result_dir, exp_name, 'prior'))
+    prior_csv_writer = CSVWriter(log_dir=osp.join(result_dir, exp_name, 'prior'))
 
     trainloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
     valloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
@@ -227,7 +227,7 @@ def train_gsvae(
 
     # valing simple model saving and loading
 
-    save_path = osp.join(result_dir, exp_name, 'gumbel', 'model.pth')
+    save_path = osp.join(result_dir, exp_name, 'model.pth')
     torch.save(dict(gsvae_base=gsvae_base.state_dict(), gsvae_prior=gsvae_prior.state_dict()), save_path)
     checkpoint = torch.load(save_path, map_location=device)
     gsvae_base.load_state_dict(checkpoint['gsvae_base'])
@@ -254,4 +254,4 @@ def train_gsvae(
     _, C, H, W = recon.shape
     real_recon = torch.stack((images, recon), axis=1).view(100, C, H, W)
     real_recon = real_recon.permute(0, 2, 3, 1).cpu().numpy().astype(np.uint8)
-    save_results(samples, real_recon, gsvae_train_loss, gsvae_val_loss, prior_train_loss, prior_val_loss, result_dir=osp.join(result_dir, exp_name, 'gumbel'), show_figure=False)
+    save_results(samples, real_recon, gsvae_train_loss, gsvae_val_loss, prior_train_loss, prior_val_loss, result_dir=osp.join(result_dir, exp_name), show_figure=False)

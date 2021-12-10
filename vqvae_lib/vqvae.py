@@ -17,12 +17,12 @@ def logsigmoid_diff(a, b):
     log(exp(-b) - exp(-a)) + log(sig(a)) + log(sig(b))
     """
     c = torch.max(-a, -b).detach()
-    term = torch.exp(-b - c) - torch.exp(-a - c) 
+    term = torch.exp(-b - c) - torch.exp(-a - c)
     # Clamp, but retain gradient.
     term = term + torch.max(torch.zeros_like(term), 1e-7 - term.detach())
     term1 = c + torch.log(term)
 
-  
+
     diff = term1 + F.logsigmoid(a) + F.logsigmoid(b)
     return diff
 
@@ -35,7 +35,7 @@ class DiscretizedLogistic:
         self.loc = loc
         self.scale = scale
         self.n_classes = n_classes
-    
+
     def log_prob(self, x):
         assert torch.all((0 <= x) & (x <= self.n_classes - 1))
         # Somehow we don't check whether x is discrete.
@@ -59,7 +59,7 @@ class DiscretizedLogistic:
         logdiff = torch.where(x == 0., left_case, logdiff)
         logdiff = torch.where(x == (self.n_classes - 1), right_case, logdiff)
         return logdiff
-    
+
 
 class LayerNorm(nn.LayerNorm):
     """You need this. Layernorm only handles last several dimensions."""
@@ -86,7 +86,7 @@ class LayerNorm(nn.LayerNorm):
 
 
 class ResBlock(nn.Module):
-    """Note: this follows DeepMind implementation. 
+    """Note: this follows DeepMind implementation.
 
     A bit werid: relu at the start of forward, and no relu at the end.
     """
@@ -125,7 +125,7 @@ class MaskedConv2d(nn.Conv2d):
       assert kernel_size % 2 == 1
       nn.Conv2d.__init__(self, in_channels, out_channels, kernel_size, stride=1, padding=kernel_size // 2)
       (o, i, h, w) = self.weight.size()
-      
+
       mask = torch.zeros(o, i, h, w)
       mask[:, :, :h//2] = 1.0
       mask[:, :, h//2, :w//2] = 1.0
@@ -163,7 +163,7 @@ class ResMaskedConvBlock(nn.Module):
       self.conv2 = MaskedConv2d('B', channel_ordered, channels//2, channels//2, kernel_size)
       self.conv3 = MaskedConv2d('B', channel_ordered, channels//2, channels, 1)
       self.relu = nn.ReLU(inplace=True)
-    
+
     def forward(self, x):
       identity = x
       x = self.relu(self.conv1(x))
@@ -189,7 +189,7 @@ class PixelCNN(nn.Module):
       for i in range(n_layers):
         # self.blocks.append(ResMaskedConvBlock(n_filters, 7, channel_ordered))
         self.blocks.append(MaskedConv2d('B', channel_ordered, n_filters, n_filters, 3))
-      
+
         self.block_lns.append(LayerNorm(n_filters, channel_ordered))
 
       # n channels, n_color possible values each
@@ -207,7 +207,7 @@ class PixelCNN(nn.Module):
       Returns:
         logits: (B, 4, C, H, W)
       """
-      
+
       B, C, H, W = x.size()
       # Note scaling happens here
       x = self.normalize(x)
@@ -226,18 +226,18 @@ class PixelCNN(nn.Module):
       # (B, C, 4, H, W) -> (B, 4, C, H, W)
       logits = logits.transpose(1, 2)
       return logits
-      
+
 
     @property
     def device(self):
       return next(iter(self.parameters())).device
-      
+
 
     def log_prob(self, data):
       """
-      Args: 
+      Args:
         data: (B, C, H, W)
-      
+
       Returns:
         log_prob: (B, C, H, W)
       """
@@ -248,7 +248,7 @@ class PixelCNN(nn.Module):
       # (B, C, H, W)
       log_prob = -F.cross_entropy(logits, data.long(), reduction='none')
       return log_prob
-    
+
     def normalize(self, data):
       """
       Args:
@@ -256,11 +256,11 @@ class PixelCNN(nn.Module):
       Returns
         normalized: FloatTensor, shape (B, C, H, W), in range [-1, 1]
       """
-      return data / (self.n_colors - 1) * 2 - 1 
+      return data / (self.n_colors - 1) * 2 - 1
 
     def forward(self, data):
       """
-      Args: 
+      Args:
         data: (B, H, W, 1)
 
       Return:
@@ -297,7 +297,7 @@ class VQVAEPrior(PixelCNN):
         self.embedding = nn.Embedding(num_embeddings=num_embeddings, embedding_dim=embedding_dim)
         self.in_conv = MaskedConv2d('A', channel_ordered, embedding_dim, n_filters, 3)
         self.num_embeddings = num_embeddings
-      
+
     def embed(self, x):
         # (B, 1, H, W)
         assert torch.all((0 <= x) & (x <= self.num_embeddings - 1))
@@ -306,11 +306,11 @@ class VQVAEPrior(PixelCNN):
         embeddings = self.embedding(x)
         embeddings = embeddings.permute(0, 3, 1, 2)
         return embeddings
-    
+
     def compute_logits(self, x):
         B, C, H, W = x.size()
         x = self.embed(x)
-        
+
         x = self.relu(self.in_ln(self.in_conv(x)))
 
         for ln, block in zip(self.block_lns, self.blocks):
@@ -446,7 +446,7 @@ class VQVAEBase(nn.Module):
         assert encoded.size() == embeddings.size() == (B, D, H, W)
         return indices, embeddings
 
-    
+
     def decode(self, encoded, embeddings):
         """Used in training"""
         # ST gradient. Value is embeddings, but grad flows to encoded.
@@ -468,7 +468,7 @@ class VQVAEBase(nn.Module):
         """
         Important: assume x is in [0, 255]
         """
-        
+
         log = {}
         indices, encoded, embeddings = self.encode(x)
         codebook_loss = F.mse_loss(embeddings, encoded.detach())
@@ -489,7 +489,7 @@ class VQVAEBase(nn.Module):
             # This is not meaningful. Doing it here anyway. p(x|z)
             nll_output = recon_loss / self.data_variance + math.log(2 * math.pi * self.data_variance)
             # p(x|z) + p(z). Uniform p(z). log p(z) is just n_latent (8 * 8) times log (num_embed)
-            nll_lb = nll_output + np.prod(indices[1:].size()) * math.log(self.num_embed) / np.prod(x[1:].size())
+            nll_lb = nll_output + np.prod(indices.size()[1:]) * math.log(self.num_embed) / np.prod(x.size()[1:])
             bits_per_dim = nll_lb / math.log(2)
             log.update({
                 'loss': loss,
@@ -546,7 +546,7 @@ class VQVAE(nn.Module):
         super().__init__()
         self.base = base
         self.prior = prior
-    
+
     @torch.no_grad()
     def sample(self, n_samples):
         # (B, 1, H, W)
