@@ -300,7 +300,7 @@ def gumbel_softmax(logits, temperature, latent_dim, categorical_dim=10,
 
 class GumbelSoftmaxVAEBase(nn.Module):
     def __init__(self, beta=1.0, loss_type='mse', pixel_range=256,
-        num_embed=512, embed_dim=64, vq_loss_weight=1.0, n_hidden=128,
+        num_embed=512, embed_dim=64, n_hidden=128,
         res_hidden=32, data_variance=0.06327039811675479,
         categorical_dim=10, temperature=1.0, hard_gs=False, eps=1e-20):
         super().__init__()
@@ -463,7 +463,7 @@ class GumbelSoftmaxVAEBase(nn.Module):
 
 
 class GumbelSoftmaxVAEPrior(PixelCNN):
-    def __init__(self,  image_shape, channel_ordered, n_colors, n_layers, n_filters, num_embeddings=512, embedding_dim=64):
+    def __init__(self, image_shape, channel_ordered, n_colors, n_layers, n_filters, num_embeddings=512, embedding_dim=64):
         super().__init__(image_shape, channel_ordered, n_colors, n_layers, n_filters)
         self.embedding = nn.Embedding(num_embeddings=num_embeddings, embedding_dim=embedding_dim)
         self.in_conv = MaskedConv2d('A', channel_ordered, embedding_dim, n_filters, 3)
