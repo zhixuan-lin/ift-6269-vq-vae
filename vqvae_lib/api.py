@@ -10,6 +10,7 @@ from torchvision import transforms
 from torchvision.utils import make_grid
 from vqvae_lib.vqvae import VQVAE, VQVAEBase, create_indices_dataset, VQVAEPrior
 from vqvae_lib.utils import Trainer, save_results, attach_run_id, CSVWriter
+from vqvae_lib.baselines import VanillaVAE
 import matplotlib.pyplot as plt
 import pathlib
 from torch.utils.tensorboard import SummaryWriter
@@ -107,3 +108,61 @@ def train_vqvae(
     real_recon = torch.stack((images, recon), axis=1).view(100, C, H, W)
     real_recon = real_recon.permute(0, 2, 3, 1).cpu().numpy().astype(np.uint8)
     save_results(samples, real_recon, vqvae_train_loss, vqvae_val_loss, prior_train_loss, prior_val_loss, result_dir=osp.join(result_dir, exp_name), show_figure=False)
+
+
+def train_vanilla_vae(
+    image_size=32,
+    train_dataset: Dataset = None,
+    val_dataset: Dataset = None,
+    result_dir='./results',
+    exp_name='run',
+    loss_type='mse',
+    device='auto',
+    lr=3e-4,
+    beta=1.0,
+    num_embed=512,
+    embed_dim=64,
+    batch_size=32,
+    epochs=20,
+    n_hidden=128,
+    res_hidden=32
+):
+    assert train_dataset is not None and val_dataset is not None
+
+    exp_name = attach_run_id(result_dir, exp_name)
+    if device =='auto':
+        device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
+    summary_writer = SummaryWriter(log_dir=osp.join(result_dir, exp_name))
+    csv_writer = CSVWriter(log_dir=osp.join(result_dir, exp_name))
+
+    trainloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    valloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+    vanilla_vae = VanillaVAE(beta=beta, loss_type=loss_type, num_embed=num_embed, embed_dim=embed_dim, n_hidden=n_hidden, res_hidden=res_hidden, image_width=image_size)
+    vanilla_vae = vanilla_vae.to(device)
+    vanilla_vae_trainer = Trainer(vanilla_vae, trainloader, valloader, lr, device, epochs, print_every=1, grad_clip=None, summary_writer=summary_writer, csv_writer=csv_writer)
+    vanilla_vae_train_log, vanilla_vae_val_log = vanilla_vae_trainer.train()
+
+    vanilla_vae_train_loss = vanilla_vae_train_log['loss']
+    vanilla_vae_val_loss = vanilla_vae_val_log['loss']
+
+    # valing simple model saving and loading
+    save_path = osp.join(result_dir, exp_name, 'model.pth')
+    torch.save(dict(vanilla_vae=vanilla_vae.state_dict()), save_path)
+    checkpoint = torch.load(save_path, map_location=device)
+    vanilla_vae.load_state_dict(checkpoint['vanilla_vae'])
+
+    vanilla_vae.eval()
+    samples = vanilla_vae.sample(100)
+
+    # assert torch.all((0 <= samples) & (samples <= 255))
+    samples = samples.cpu().numpy().transpose(0, 2, 3, 1).astype(np.uint8)
+
+    # Reconstruction
+    images = torch.stack([val_dataset[i] for i in range(50)], dim=0).to(device)
+    recon = vanilla_vae.reconstruct(images)
+
+    # (100, C, H, W), uint8
+    _, C, H, W = recon.shape
+    real_recon = torch.stack((images, recon), axis=1).view(100, C, H, W)
+    real_recon = real_recon.permute(0, 2, 3, 1).cpu().numpy().astype(np.uint8)
+    save_results(samples, real_recon, vanilla_vae_train_loss, vanilla_vae_val_loss, prior_train_loss=None, prior_val_loss=None, result_dir=osp.join(result_dir, exp_name), show_figure=False)

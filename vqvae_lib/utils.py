@@ -91,7 +91,7 @@ class ArrayDict(dict):
     else:
         for k in x:
             self[k] =  np.array(x[k])
-  
+
   def extend(self, x):
     if self:
         assert self.keys() == x.keys()
@@ -140,7 +140,7 @@ class Trainer:
         val_log.append(self.validate())
         print('Initial loss:', val_log['loss'])
         for epoch in range(self.max_epochs):
- 
+
             train_log.extend(self.train_one_epoch())
             val_log.append(self.validate())
             if (epoch + 1) % self.print_every == 0:
@@ -217,7 +217,7 @@ class Trainer:
         assert all([v.ndim == 1 for v in logs.values()])
         logs = {k: logs[k].mean() for k in logs}
         return logs
-    
+
 
 
 def attach_run_id(path, exp_name):
@@ -270,14 +270,16 @@ def save_training_plot(train_losses, test_losses, title, fname, show_figure=Fals
     savefig(fname, show_figure)
 
 # Show results, from https://github.com/rll/deepul/blob/master/deepul/hw3_helper.py
-def save_results(samples, real_recon, vqvae_train_loss, vqvae_test_loss, prior_train_loss, prior_test_loss, result_dir, show_figure=False):
+def save_results(samples, real_recon, vqvae_train_loss, vqvae_test_loss, prior_train_loss=None, prior_test_loss=None, result_dir='./results', show_figure=False):
     samples, real_recon = samples.astype('float32'), real_recon.astype('float32')
     print(f'VQ-VAE Final Test Loss: {vqvae_test_loss[-1]:.4f}')
-    print(f'PixelCNN Prior Final Test Loss: {prior_test_loss[-1]:.4f}')
+    if prior_test_loss is not None:
+        print(f'PixelCNN Prior Final Test Loss: {prior_test_loss[-1]:.4f}')
     save_training_plot(vqvae_train_loss, vqvae_test_loss,'VQ-VAE Train Plot',
                        osp.join(result_dir, 'vqvae_train_plot.png'))
-    save_training_plot(prior_train_loss, prior_test_loss,'PixelCNN Prior Train Plot',
-                       osp.join(result_dir, 'prior_train_plot.png'))
+    if not (prior_train_loss is None or prior_test_loss is None):
+        save_training_plot(prior_train_loss, prior_test_loss,'PixelCNN Prior Train Plot',
+                        osp.join(result_dir, 'prior_train_plot.png'))
     show_samples(samples, title='Samples',
                  fname=osp.join(result_dir, 'samples.png'))
     show_samples(real_recon, title='Reconstructions',
