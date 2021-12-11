@@ -5,7 +5,7 @@ from torch import nn
 from torch.nn import functional as F
 from torch.distributions import TransformedDistribution, Uniform, SigmoidTransform, AffineTransform
 import numpy as np
-from vqvae import ResBlock, DiscretizedLogistic, Encoder, Decoder, MaskedConv2d, PixelCNN
+from vqvae_lib.vqvae import ResBlock, DiscretizedLogistic, Encoder, Decoder, MaskedConv2d, PixelCNN
 
 
 
@@ -226,7 +226,7 @@ class VanillaVAE(nn.Module):
             raise ValueError('Invalid loss_type')
 
         # p(x|z) + p(z). Uniform p(z). log p(z) is just n_latent (8 * 8) times log (num_embed)
-        nll_lb = nll_output + np.prod(z.size()[2:])*np.log(self.num_embed)/np.prod(x.size()[1:])
+        nll_lb = nll_output + np.prod(z.size()[1:])*np.log(self.num_embed)/np.prod(x.size()[1:])
         bits_per_dim = nll_lb / np.log(2)
         log.update({
             'loss': loss,
@@ -520,18 +520,6 @@ class GumbelSoftmaxVAE(nn.Module):
         # (B, D, H, W)
         embeddings = embeddings.permute(0, 3, 1, 2)
         samples = self.base.decode_and_unnormalize(embeddings)
-        return samples
-
-    @torch.no_grad()
-    def sample(self, n_samples):
-        """
-        Args:
-            n_samples: number of samples
-        Returns:
-            torch float images with shape (B, 3, H, W). In range [0, 255]
-        """
-        z = torch.randn(n_samples, self.embed_dim, device=self.device)
-        samples = self.decode_and_unnormalize(z)
         return samples
 
     @torch.no_grad()

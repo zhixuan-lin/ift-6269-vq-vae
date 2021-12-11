@@ -29,7 +29,6 @@ def main():
         exp_name='vanilla_vae_dl_cifar10',
         loss_type='discretized_logistic',
         epochs=100,
-        prior_epochs=100,
     )
     # train_data, val_data = np.zeros((100, 32, 32, 3)), np.zeros((10000, 32, 32, 3))
 
