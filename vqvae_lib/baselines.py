@@ -261,7 +261,8 @@ class VanillaVAE(nn.Module):
         Returns:
             something like x
         """
-        embeddings = self.encode(x)
+        mu, logvar = self.encode(x)
+        embeddings = self.reparameterize(mu, logvar)
         return self.decode_and_unnormalize(embeddings)
 
 
