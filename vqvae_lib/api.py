@@ -165,7 +165,7 @@ def train_vanilla_vae(
     _, C, H, W = recon.shape
     real_recon = torch.stack((images, recon), axis=1).view(100, C, H, W)
     real_recon = real_recon.permute(0, 2, 3, 1).cpu().numpy().astype(np.uint8)
-    save_results(samples, real_recon, vanilla_vae_train_loss, vanilla_vae_val_loss, prior_train_loss=None, prior_val_loss=None, result_dir=osp.join(result_dir, exp_name), show_figure=False)
+    save_results(samples, real_recon, vanilla_vae_train_loss, vanilla_vae_val_loss, prior_train_loss=None, prior_test_loss=None, result_dir=osp.join(result_dir, exp_name), show_figure=False)
 
 
 def train_gsvae(
