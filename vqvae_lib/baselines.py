@@ -2,6 +2,7 @@ from numpy.core.defchararray import encode
 import torch
 import math
 from torch import nn
+from torch.distributions import Normal, kl_divergence
 from torch.nn import functional as F
 from torch.distributions import TransformedDistribution, Uniform, SigmoidTransform, AffineTransform
 import numpy as np
@@ -131,13 +132,13 @@ class VanillaVAE(nn.Module):
             if isinstance(m, nn.Conv2d):
                 nn.init.kaiming_normal_(m.weight, mode="fan_out", nonlinearity="relu")
 
-    def reparameterize(self, mu, logvar):
-        """
-        Reparameterization trick to sample from N(mu, var) from N(0,1).
-        """
-        std = torch.exp(0.5 * logvar)
-        eps = torch.randn_like(std)
-        return mu + std*eps
+    # def reparameterize(self, mu, logvar):
+        # """
+        # Reparameterization trick to sample from N(mu, var) from N(0,1).
+        # """
+        # std = torch.exp(0.5 * logvar)
+        # eps = torch.randn_like(std)
+        # return mu + std*eps
 
     @property
     def device(self):
@@ -192,19 +193,23 @@ class VanillaVAE(nn.Module):
                 nll_lb: negative elbo, average over number of pixels
                 bits_per_dim: nll_lb / log(2)
         """
+        B, C, H, W = x.size()
         loss = recons_loss = None
         log = {}
 
         mu, logvar = self.encode(x)
-        z = self.reparameterize(mu, logvar)
+        var = torch.exp(logvar)
+        # (B, D)
+        posterior = Normal(mu, var)
+        z = posterior.rsample()
         if self.loss_type == 'mse':
-            recons = self.decode(z)
-            recons_loss = F.mse_loss(recons, self.normalize(x))
+            recon = self.decode(z)
+            # recons_loss = F.mse_loss(recon, self.normalize(x))
+            output_dist = Normal(recon, self.data_variance)
+            # Note, you should use sum here, and then mean over batch
+            nll_output = -output_dist.log_prob(x).sum(dim=[1, 2, 3]).mean(dim=0)
 
-            kld_loss = torch.mean(-0.5*torch.sum(1+logvar-mu**2-logvar.exp(), dim=1), dim=0)
-            loss = recons_loss + self.beta*kld_loss
-            # p(x|z)
-            nll_output = recons_loss / self.data_variance + math.log(2 * math.pi * self.data_variance)
+
         elif self.loss_type == 'discretized_logistic':
             params = self.decode(z)
             # (B, 3, H, W), (B, 3, H, W)
@@ -212,22 +217,30 @@ class VanillaVAE(nn.Module):
             # Let loc_tmp stay in (-0.5, 0.5). loc in [0, 255]
             loc = self.unnormalize(loc_tmp)
             scale = F.softplus(scale_tmp)
-            likelihood_dist = DiscretizedLogistic(n_classes=self.pixel_range, loc=loc, scale=scale)
-            nll_output = -likelihood_dist.log_prob(x)
+            output_dist = DiscretizedLogistic(n_classes=self.pixel_range, loc=loc, scale=scale)
+            # Note, you should use sum here, and then mean over batch
+            nll_output = -output_dist.log_prob(x).sum(dim=[1, 2, 3]).mean(dim=0)
             assert nll_output.size() == x.size()
-            nll_output = nll_output.mean()
-            kld_loss = torch.mean(-0.5*torch.sum(1+logvar-mu**2-logvar.exp(), dim=1), dim=0)
-            loss = nll_output + self.beta*kld_loss
 
-            # Logging purpose only
-            # Note loc_tmp is in range (-0.5, 0.5)
-            recons_loss = F.mse_loss(loc_tmp, self.normalize(x))
+            recon = loc_tmp
+
         else:
             raise ValueError('Invalid loss_type')
 
-        # p(x|z) + p(z). Uniform p(z). log p(z) is just n_latent (8 * 8) times log (num_embed)
-        nll_lb = nll_output + np.prod(z.size()[1:])*np.log(self.num_embed)/np.prod(x.size()[1:])
+        # Note, you should use sum here. Later we average over number of pixels
+        kl_loss = kl_divergence(posterior, Normal(0, 1)).sum(dim=[1]).mean(dim=0)
+
+        # Here, you average over number of pixels.
+        neg_elbo = (nll_output + kl_loss) / (H * W * C)
+        loss = neg_elbo
+
+        # Logging purpose only
+        # Right scale here
+        nll_output = nll_output / (H * W * C)
+        recons_loss = F.mse_loss(recon, self.normalize(x))
+        nll_lb = neg_elbo
         bits_per_dim = nll_lb / np.log(2)
+
         log.update({
             'loss': loss,
             'recon_loss': recons_loss,
