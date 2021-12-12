@@ -61,4 +61,4 @@ Ignore follwoing parts
 > ## Notes
 
 > * Currently using CIFAR10. Note there is no validation split. We should create it.
-> * Most plotting and visualization code is from this [repo](https://github.com/rll/deepul). They are pretty primitive and we just implement tensorboard logging later.
+> * # Most plotting and visualization code is from this [repo](https://github.com/rll/deepul). They are pretty primitive and we just implement tensorboard logging later.
