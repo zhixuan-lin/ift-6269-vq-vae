@@ -250,6 +250,7 @@ class VanillaVAE(nn.Module):
             'nll_output': nll_output,
             'nll_lb': nll_lb,
             'bits_per_dim': bits_per_dim,
+            'kl_loss': kl_loss
         })
 
         assert all(k in log for k in ['recon_loss', 'recon_loss_scaled', 'nll_output', 'nll_lb', 'bits_per_dim'])
