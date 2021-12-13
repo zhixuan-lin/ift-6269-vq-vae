@@ -1,4 +1,4 @@
-from numpy.core.defchararray import encode
+# from numpy.core.defchararray import encode
 import torch
 import math
 from torch import nn
@@ -276,38 +276,6 @@ class VanillaVAE(nn.Module):
         return self.decode_and_unnormalize(embeddings)
 
 
-def gumbel_softmax(logits, temperature, latent_dim, categorical_dim=10,
-        hard=False, eps=1e-20, device='cpu'):
-    """
-    ST-gumple-softmax
-    input: [*, n_class]
-    return: flatten --> [*, n_class] an one-hot vector
-    """
-    logits = logits.view(*logits.size()[:-1], latent_dim, categorical_dim)
-
-    U = torch.rand(logits.size(), device=device)
-    gumbel_sample = -torch.log(-torch.log(U + eps) + eps)
-    y = logits + gumbel_sample
-    y = F.softmax(y / temperature, dim=-1)
-
-    qy = F.softmax(logits, dim=-1).reshape(*y.size()[:-2], latent_dim * categorical_dim)
-    qy = qy.permute(0, 3, 1, 2)   # (B, D, 8, 8)
-
-    if not hard:
-        y = y.view(*y.size()[:-2], latent_dim * categorical_dim)
-        y = y.permute(0, 3, 1, 2)   # (B, D, 8, 8)
-        return y, qy
-
-    shape = y.size()
-    _, ind = y.max(dim=-1)
-    y_hard = torch.zeros_like(y).view(*y.size()[:-1], shape[-1])
-    y_hard.scatter_(-1, ind.view(*y.size()[:-1], 1), 1)
-    y_hard = y_hard.view(*shape)
-    # Set gradients w.r.t. y_hard gradients w.r.t. y
-    y_hard = (y_hard - y).detach() + y
-    y_hard = y_hard.view(*y.size()[:-2], latent_dim * categorical_dim)
-    y_hard = y_hard.permute(0, 3, 1, 2)   # (B, D, 8, 8)
-    return y_hard, qy
 
 class GumbelSoftmaxVAEBase(nn.Module):
     def __init__(self, beta=0.25, loss_type='mse', pixel_range=256, num_embed=512,
@@ -317,14 +285,13 @@ class GumbelSoftmaxVAEBase(nn.Module):
         assert loss_type in ['mse', 'discretized_logistic']
         self.loss_type = loss_type
         self.vq_loss_weight = vq_loss_weight
-        self.encoder = Encoder(embed_dim, n_hidden, res_hidden, loss_type)
+        self.encoder = Encoder(num_embed, n_hidden, res_hidden, loss_type)
         self.decoder = Decoder(embed_dim, n_hidden, res_hidden, loss_type)
 
         # (K, D)
         self.codebook = nn.Embedding(num_embed, embed_dim)
         # See their sonnet's way of initialization
         self.codebook.weight.data.uniform_(-math.sqrt(3 / embed_dim), math.sqrt(3 / embed_dim))
-        self.beta = beta
         self.pixel_range = pixel_range
         self.num_embed = num_embed
         self.embed_dim = embed_dim
@@ -360,45 +327,38 @@ class GumbelSoftmaxVAEBase(nn.Module):
         """
         x = self.normalize(x)
         # (B, D, 8, 8)
-        encoded = self.encoder(x)
-        indices, embeddings = self.quantize(encoded)
-        return indices, encoded, embeddings
+        logits = self.encoder(x)
+        B, K, H, W = logits.size()
+        # (B, K, H, W)
+        samples = F.gumbel_softmax(logits, self.tau, dim=1)
+        indices = torch.argmax(samples, dim=1)
+        # (B, K, H*W)
+        samples_flat = samples.view(B, K, H*W)
+        # (D, K) = (K, D).permute(1, 0)
+        code_transpose = self.codebook.weight.permute(1, 0)
+        assert code_transpose.size() == (self.embed_dim, self.num_embed)
 
-    def quantize(self, encoded):
-        B, D, H, W = encoded.size()
-
-        # (B, D, H*W)
-        encoded_flat = encoded.view(B, D, H*W)
-        # (1, K, D)
-        weight = self.codebook.weight[None, ...]
-        # (B, 1, H*W) + (1, K, 1) + (1, K, D) @ (B, D, H*W) = (B, K, H*W)
-        squared_dist = (encoded_flat ** 2).sum(dim=1, keepdim=True) + (weight ** 2).sum(dim=2, keepdim=True) - 2 * weight @ encoded_flat
-
-        # (B, K, H*W) -> (B, H, W)
-        indices = torch.argmin(squared_dist, dim=1).view(B, H, W)
-        # (B, H, W, D)
-        embeddings = self.codebook(indices)
-        embeddings = embeddings.permute(0, 3, 1, 2)
-        assert encoded.size() == embeddings.size() == (B, D, H, W)
-        return indices, embeddings
+        # (D, N) @ (B, N, H*W)  = (B, D, H*W)
+        encoding_flat = code_transpose @ samples_flat
+        encoding = encoding_flat.view(B, self.embed_dim, H, W)
+        assert encoding.size() == (B, self.embed_dim, H, W)
+        return indices, encoding, encoding
 
 
-    def decode(self, encoded, embeddings):
+    def decode(self, encoding):
         """Used in training"""
-        # ST gradient. Value is embeddings, but grad flows to encoded.
-        input = encoded + (embeddings - encoded).detach()
-        return self.decoder(input)
+        return self.decoder(encoding)
 
     @torch.no_grad()
-    def decode_and_unnormalize(self, embeddings):
+    def decode_and_unnormalize(self, encoding):
         """Only used in validation"""
-        params = self.decoder(embeddings)
+        params = self.decoder(encoding)
         return torch.clamp(self.unnormalize(params[:, :3, :, :]), min=0.5, max=self.pixel_range-0.5).floor()
 
     @torch.no_grad()
     def reconstruct(self, x):
-        _, _, embeddings = self.encode(x)
-        return self.decode_and_unnormalize(embeddings)
+        _, encoding = self.encode(x)
+        return self.decode_and_unnormalize(encoding)
 
     def forward(self, x):
         """
@@ -406,10 +366,10 @@ class GumbelSoftmaxVAEBase(nn.Module):
         """
 
         log = {}
-        indices, encoded, embeddings = self.encode(x)
+        indices, encoding, _ = self.encode(x)
 
         if self.loss_type == 'mse':
-            recon = self.decode(encoded, embeddings)
+            recon = self.decode(encoding)
             recon_loss = F.mse_loss(recon, self.normalize(x))
             # TODO: Loss scaling:
             loss = recon_loss / self.data_variance
@@ -430,7 +390,7 @@ class GumbelSoftmaxVAEBase(nn.Module):
                 'bits_per_dim': bits_per_dim,
             })
         elif self.loss_type == 'discretized_logistic':
-            params = self.decode(encoded, embeddings)
+            params = self.decode(encoding)
             # (B, 3, H, W), (B, 3, H, W)
             loc_tmp, scale_tmp = params.chunk(2, dim=1)
             # Let loc_tmp stay in (-0.5, 0.5). loc in [0, 255]
@@ -448,7 +408,7 @@ class GumbelSoftmaxVAEBase(nn.Module):
             recon_loss = F.mse_loss(loc_tmp, self.normalize(x))
 
             # Lowerbound of marginal likelihood
-            nll_lb = nll_output + np.prod(indices[1:].size()) * math.log(self.num_embed) / np.prod(x[1:].size())
+            nll_lb = nll_output + np.prod(indices.size()[1:]) * math.log(self.num_embed) / np.prod(x.size()[1:])
 
             bits_per_dim = nll_lb / math.log(2)
             log.update({

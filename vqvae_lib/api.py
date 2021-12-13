@@ -1,4 +1,5 @@
 
+import math
 import argparse
 import os
 import os.path as osp
@@ -186,9 +187,27 @@ def train_gsvae(
     epochs=20,
     prior_epochs=20,
     n_hidden=128,
-    res_hidden=32
+    res_hidden=32,
+    tau_start=1.0
 ):
     assert train_dataset is not None and val_dataset is not None
+
+    class AdjustTau:
+        def __init__(self, tau_start, model, max_epochs):
+            self.tau_start = tau_start
+            self.model = model
+            self.max_epochs = max_epochs
+        
+        def __call__(self, epoch):
+            """Decay the learning rate based on schedule"""
+            # cosine schedule
+            tau = self.tau_start
+            if epoch > self.max_epochs:
+                tau = 1 / 16
+            else:
+                tau *= 0.5 * (1. + math.cos(math.pi * epoch / self.max_epochs))
+                tau = max(tau, 1 / 16)
+            self.model.tau = tau
 
     exp_name = attach_run_id(result_dir, exp_name)
     if device =='auto':
@@ -200,9 +219,10 @@ def train_gsvae(
 
     trainloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
     valloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
-    gsvae_base = GumbelSoftmaxVAEBase(beta=beta, loss_type=loss_type, vq_loss_weight=vq_loss_weight, num_embed=num_embed, embed_dim=embed_dim, n_hidden=n_hidden, res_hidden=res_hidden)
+    gsvae_base = GumbelSoftmaxVAEBase(beta=beta, loss_type=loss_type, vq_loss_weight=vq_loss_weight, num_embed=num_embed, embed_dim=embed_dim, n_hidden=n_hidden, res_hidden=res_hidden, tau=tau_start)
     gsvae_base = gsvae_base.to(device)
-    gsvae_trainer = Trainer(gsvae_base, trainloader, valloader, lr, device, epochs, print_every=1, grad_clip=None, summary_writer=summary_writer, csv_writer=csv_writer)
+    adjust_tau = AdjustTau(tau_start, gsvae_base, max_epochs=epochs)
+    gsvae_trainer = Trainer(gsvae_base, trainloader, valloader, lr, device, epochs, print_every=1, grad_clip=None, summary_writer=summary_writer, csv_writer=csv_writer, on_epoch_end=adjust_tau)
     gsvae_train_log, gsvae_val_log = gsvae_trainer.train()
 
     prior_train_data = create_indices_dataset(trainloader, gsvae_base, device)

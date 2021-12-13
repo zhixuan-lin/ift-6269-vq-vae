@@ -120,6 +120,7 @@ class Trainer:
         summary_writer=None,
         csv_writer=None,
         log_every_n_steps=5,
+        on_epoch_end=None
     ):
       self.model = model
       self.trainloader = trainloader
@@ -133,6 +134,7 @@ class Trainer:
       self.summary_writer = summary_writer
       self.log_every_n_steps = log_every_n_steps
       self.csv_writer = csv_writer
+      self.on_epoch_end = on_epoch_end
 
     def train(self):
         val_log = ArrayDict()
@@ -143,6 +145,7 @@ class Trainer:
 
             train_log.extend(self.train_one_epoch())
             val_log.append(self.validate())
+            self.on_epoch_end(epoch)
             if (epoch + 1) % self.print_every == 0:
                 string = 'Train: epoch: {}'.format(epoch + 1)
                 string += ', iter: {}'.format((epoch + 1) * len(self.trainloader))
