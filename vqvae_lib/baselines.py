@@ -365,23 +365,22 @@ class GumbelSoftmaxVAEBase(nn.Module):
         return indices, encoded, embeddings
 
     def quantize(self, encoded):
-        B, N, H, W = encoded.size()
+        B, D, H, W = encoded.size()
 
         samples = F.gumbel_softmax(encoded, self.tau, dim=1)
         indices = torch.argmax(samples, dim=1)
-        samples_flat = samples.view(B, N, H*W)  # (B, N, H*W)
+        samples_flat = samples.view(B, D, H*W)  # (B, D, H*W)
 
-        # # (B, D, H*W)
-        # encoded_flat = encoded.view(B, D, H*W)
-        # # (1, K, D)
-        # weight = self.codebook.weight[None, ...]
-        weight_T = self.codebook.weight.permute(1, 0)
-        assert weight_T.size() == (self.embed_dim, self.num_embed)
+        weight = self.codebook.weight
+        assert weight.size() == (self.num_embed, self.embed_dim)
 
-        embeddings_flat = weight_T @ samples_flat   # (D, N) @ (B, N, H*W)  = (B, D, H*W)
-        embeddings = embeddings_flat.view(B, self.embed_dim, H, W)
-        assert embeddings.size() == (B, self.embed_dim, H, W)
+        encoding_flat = weight @ samples_flat   # (N, D) @ (B, D, H*W) = (B, N, H*W)
+        encoding = encoding_flat.view(B, self.num_embed, H, W)
 
+        indices = torch.argmin(encoding, dim=1).view(B, H, W)   # (B, N, H*W) -> (B, H, W)
+        embeddings = self.codebook(indices)
+        embeddings = embeddings.permute(0, 3, 1, 2)
+        assert encoded.size() == embeddings.size() == (B, D, H, W)
         return indices, embeddings
 
 
