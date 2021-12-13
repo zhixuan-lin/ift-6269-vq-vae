@@ -132,13 +132,10 @@ class VanillaVAE(nn.Module):
             if isinstance(m, nn.Conv2d):
                 nn.init.kaiming_normal_(m.weight, mode="fan_out", nonlinearity="relu")
 
-    # def reparameterize(self, mu, logvar):
-        # """
-        # Reparameterization trick to sample from N(mu, var) from N(0,1).
-        # """
-        # std = torch.exp(0.5 * logvar)
-        # eps = torch.randn_like(std)
-        # return mu + std*eps
+    def reparameterize(self, mu, logvar):
+        std = torch.exp(0.5 * logvar)
+        posterior = Normal(mu, std)     # (B, D)
+        return posterior.rsample()
 
     @property
     def device(self):
@@ -198,10 +195,7 @@ class VanillaVAE(nn.Module):
         log = {}
 
         mu, logvar = self.encode(x)
-        var = torch.exp(logvar)
-        # (B, D)
-        posterior = Normal(mu, var)
-        z = posterior.rsample()
+        z = self.reparameterize(mu, logvar)
         if self.loss_type == 'mse':
             recon = self.decode(z)
             # recons_loss = F.mse_loss(recon, self.normalize(x))
@@ -231,7 +225,7 @@ class VanillaVAE(nn.Module):
         kl_loss = kl_divergence(posterior, Normal(0, 1)).sum(dim=[1]).mean(dim=0)
 
         # Here, you average over number of pixels.
-        # Average over numbr of pixels, even for KL. 
+        # Average over numbr of pixels, even for KL.
         nll_output /= (H * W * C)
         kl_loss /= (H * W * C)
         neg_elbo = nll_output + kl_loss
