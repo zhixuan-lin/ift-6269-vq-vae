@@ -201,7 +201,7 @@ class VanillaVAE(nn.Module):
             # recons_loss = F.mse_loss(recon, self.normalize(x))
             output_dist = Normal(recon, self.data_variance)
             # Note, you should use sum here, and then mean over batch
-            nll_output = -output_dist.log_prob(x).sum(dim=[1, 2, 3]).mean(dim=0)
+            nll_output = -output_dist.log_prob(self.normalize(x)).sum(dim=[1, 2, 3]).mean(dim=0)
 
 
         elif self.loss_type == 'discretized_logistic':
@@ -310,29 +310,22 @@ def gumbel_softmax(logits, temperature, latent_dim, categorical_dim=10,
     return y_hard, qy
 
 class GumbelSoftmaxVAEBase(nn.Module):
-    def __init__(self, beta=1.0, loss_type='mse', pixel_range=256,
-        num_embed=512, embed_dim=64, n_hidden=128,
-        res_hidden=32, data_variance=0.06327039811675479,
-        categorical_dim=10, temperature=1.0, hard_gs=False, eps=1e-20):
+    def __init__(self, beta=0.25, loss_type='mse', pixel_range=256, num_embed=512, embed_dim=64, vq_loss_weight=1.0, n_hidden=128, res_hidden=32, data_variance=0.06327039811675479):
         super().__init__()
         assert loss_type in ['mse', 'discretized_logistic']
         self.loss_type = loss_type
-        # self.vq_loss_weight = vq_loss_weight
-        self.encoder = Encoder(embed_dim*categorical_dim, n_hidden, res_hidden, loss_type)
-        self.decoder = Decoder(embed_dim*categorical_dim, n_hidden, res_hidden, loss_type)
+        self.vq_loss_weight = vq_loss_weight
+        self.encoder = Encoder(embed_dim, n_hidden, res_hidden, loss_type)
+        self.decoder = Decoder(embed_dim, n_hidden, res_hidden, loss_type)
 
         # (K, D)
-        self.codebook = nn.Embedding(num_embed, embed_dim*categorical_dim)
+        self.codebook = nn.Embedding(num_embed, embed_dim)
         # See their sonnet's way of initialization
         self.codebook.weight.data.uniform_(-math.sqrt(3 / embed_dim), math.sqrt(3 / embed_dim))
         self.beta = beta
-        self.embed_dim = embed_dim
-        self.categorical_dim = categorical_dim
-        self.temperature = temperature
-        self.hard_gs = hard_gs
-        self.eps = eps
         self.pixel_range = pixel_range
         self.num_embed = num_embed
+        self.embed_dim = embed_dim
         self.data_variance = data_variance
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
@@ -363,15 +356,10 @@ class GumbelSoftmaxVAEBase(nn.Module):
         embeddings: after quantization
         """
         x = self.normalize(x)
-        encoded = self.encoder(x)   # (B, D, 8, 8)
-
-        encoded = encoded.permute(0, 2, 3, 1)   # (B, 8, 8, D)
-        encoded_gs, qy = gumbel_softmax(encoded, self.temperature, self.embed_dim,
-            self.categorical_dim, self.hard_gs, eps=self.eps, device=self.device)
-
-        # indices, embeddings = self.quantize(encoded)
-        # return indices, encoded, embeddings
-        return encoded_gs, qy
+        # (B, D, 8, 8)
+        encoded = self.encoder(x)
+        indices, embeddings = self.quantize(encoded)
+        return indices, encoded, embeddings
 
     def quantize(self, encoded):
         B, D, H, W = encoded.size()
@@ -392,21 +380,22 @@ class GumbelSoftmaxVAEBase(nn.Module):
         return indices, embeddings
 
 
-    def decode(self, encoded):
+    def decode(self, encoded, embeddings):
         """Used in training"""
         # ST gradient. Value is embeddings, but grad flows to encoded.
-        return self.decoder(encoded)
+        input = encoded + (embeddings - encoded).detach()
+        return self.decoder(input)
 
     @torch.no_grad()
-    def decode_and_unnormalize(self, encoded):
+    def decode_and_unnormalize(self, embeddings):
         """Only used in validation"""
-        params = self.decoder(encoded)
+        params = self.decoder(embeddings)
         return torch.clamp(self.unnormalize(params[:, :3, :, :]), min=0.5, max=self.pixel_range-0.5).floor()
 
     @torch.no_grad()
     def reconstruct(self, x):
-        encoded, _ = self.encode(x)
-        return self.decode_and_unnormalize(encoded)
+        _, _, embeddings = self.encode(x)
+        return self.decode_and_unnormalize(embeddings)
 
     def forward(self, x):
         """
@@ -414,29 +403,39 @@ class GumbelSoftmaxVAEBase(nn.Module):
         """
 
         log = {}
-        encoded, qy = self.encode(x)    # (B, D, 8, 8)
+        indices, encoded, embeddings = self.encode(x)
+        codebook_loss = F.mse_loss(embeddings, encoded.detach())
+        commitment_loss = F.mse_loss(encoded, embeddings.detach())
+
+        log.update(dict(
+            codebook_loss=codebook_loss,
+            commitment_loss=commitment_loss
+        ))
 
         if self.loss_type == 'mse':
-            recon = self.decode(encoded)
+            recon = self.decode(encoded, embeddings)
             recon_loss = F.mse_loss(recon, self.normalize(x))
-
-            log_ratio = torch.log(qy * self.categorical_dim + self.eps)
-            kld_loss = torch.sum(qy * log_ratio, dim=tuple(range(1, len(qy.size()))) ).mean()
-            loss = recon_loss / self.data_variance + self.beta * kld_loss
-
+            # TODO: Loss scaling:
+            loss = recon_loss / self.data_variance + self.vq_loss_weight * (codebook_loss + self.beta * commitment_loss)
+            assert recon_loss.size() == codebook_loss.size() == commitment_loss.size()
+            # Following are logging code. No need to read.
+            # This is not meaningful. Doing it here anyway. p(x|z)
             nll_output = recon_loss / self.data_variance + math.log(2 * math.pi * self.data_variance)
-            nll_lb = nll_output + np.prod(encoded.size()[2:])*np.log(self.num_embed)/np.prod(x.size()[1:])
+            # p(x|z) + p(z). Uniform p(z). log p(z) is just n_latent (8 * 8) times log (num_embed)
+            nll_lb = nll_output + np.prod(indices.size()[1:]) * math.log(self.num_embed) / np.prod(x.size()[1:])
             bits_per_dim = nll_lb / math.log(2)
             log.update({
                 'loss': loss,
                 'recon_loss': recon_loss,
                 'recon_loss_scaled': recon_loss / self.data_variance,
+                # This is not meaningful. Doing it here anyway. p(x|z)
                 'nll_output': nll_output,
+                # Including p(z) or KL. Uniform prior used.
                 'nll_lb': nll_lb,
                 'bits_per_dim': bits_per_dim,
             })
         elif self.loss_type == 'discretized_logistic':
-            params = self.decode(encoded)
+            params = self.decode(encoded, embeddings)
             # (B, 3, H, W), (B, 3, H, W)
             loc_tmp, scale_tmp = params.chunk(2, dim=1)
             # Let loc_tmp stay in (-0.5, 0.5). loc in [0, 255]
@@ -447,16 +446,14 @@ class GumbelSoftmaxVAEBase(nn.Module):
             assert nll_output.size() == x.size()
             nll_output = nll_output.mean()
             # Note negative loglikeliood
-            log_ratio = torch.log(qy * self.categorical_dim + self.eps)
-            kld_loss = torch.sum(qy * log_ratio, dim=tuple(range(1, len(qy.size()))) ).mean()
-            loss = nll_output + self.beta * kld_loss
+            loss = nll_output + self.vq_loss_weight * (codebook_loss + self.beta * commitment_loss)
 
             # Logging purpose only
             # Note loc_tmp is in range (-0.5, 0.5)
             recon_loss = F.mse_loss(loc_tmp, self.normalize(x))
 
             # Lowerbound of marginal likelihood
-            nll_lb = nll_output + np.prod(encoded.size()[2:])*np.log(self.num_embed)/np.prod(x.size()[1:])
+            nll_lb = nll_output + np.prod(indices[1:].size()) * math.log(self.num_embed) / np.prod(x[1:].size())
 
             bits_per_dim = nll_lb / math.log(2)
             log.update({
@@ -474,7 +471,7 @@ class GumbelSoftmaxVAEBase(nn.Module):
 
 
 class GumbelSoftmaxVAEPrior(PixelCNN):
-    def __init__(self, image_shape, channel_ordered, n_colors, n_layers, n_filters, num_embeddings=512, embedding_dim=64):
+    def __init__(self,  image_shape, channel_ordered, n_colors, n_layers, n_filters, num_embeddings=512, embedding_dim=64):
         super().__init__(image_shape, channel_ordered, n_colors, n_layers, n_filters)
         self.embedding = nn.Embedding(num_embeddings=num_embeddings, embedding_dim=embedding_dim)
         self.in_conv = MaskedConv2d('A', channel_ordered, embedding_dim, n_filters, 3)
@@ -522,12 +519,12 @@ class GumbelSoftmaxVAE(nn.Module):
     @torch.no_grad()
     def sample(self, n_samples):
         # (B, 1, H, W)
-        embeddings = self.prior.sample(n_samples)
-        assert torch.all((0 <= embeddings) & (embeddings <= self.base.num_embed - 1))
+        indices = self.prior.sample(n_samples)
+        assert torch.all((0 <= indices) & (indices <= self.base.num_embed - 1))
         # (B, H, W)
-        embeddings = embeddings.long().squeeze(dim=1)
+        indices = indices.long().squeeze(dim=1)
         # (B, H, W, D)
-        embeddings = self.base.codebook(embeddings)
+        embeddings = self.base.codebook(indices)
         # (B, D, H, W)
         embeddings = embeddings.permute(0, 3, 1, 2)
         samples = self.base.decode_and_unnormalize(embeddings)
