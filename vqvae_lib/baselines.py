@@ -369,15 +369,6 @@ class GumbelSoftmaxVAEBase(nn.Module):
 
         samples = F.gumbel_softmax(encoded, self.tau, dim=1)
         indices = torch.argmax(samples, dim=1)
-        samples_flat = samples.view(B, D, H*W)  # (B, D, H*W)
-
-        weight = self.codebook.weight
-        assert weight.size() == (self.num_embed, self.embed_dim)
-
-        encoding_flat = weight @ samples_flat   # (N, D) @ (B, D, H*W) = (B, N, H*W)
-        encoding = encoding_flat.view(B, self.num_embed, H, W)
-
-        indices = torch.argmin(encoding, dim=1).view(B, H, W)   # (B, N, H*W) -> (B, H, W)
         embeddings = self.codebook(indices)
         embeddings = embeddings.permute(0, 3, 1, 2)
         assert encoded.size() == embeddings.size() == (B, D, H, W)
