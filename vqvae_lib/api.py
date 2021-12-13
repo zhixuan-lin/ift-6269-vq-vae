@@ -221,8 +221,8 @@ def train_gsvae(
     valloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
     gsvae_base = GumbelSoftmaxVAEBase(beta=beta, loss_type=loss_type, vq_loss_weight=vq_loss_weight, num_embed=num_embed, embed_dim=embed_dim, n_hidden=n_hidden, res_hidden=res_hidden, tau=tau_start)
     gsvae_base = gsvae_base.to(device)
-    adjust_tau = AdjustTau(tau_start, gsvae_base, max_epochs=epochs)
-    gsvae_trainer = Trainer(gsvae_base, trainloader, valloader, lr, device, epochs, print_every=1, grad_clip=None, summary_writer=summary_writer, csv_writer=csv_writer, on_epoch_end=adjust_tau)
+    # adjust_tau = AdjustTau(tau_start, gsvae_base, max_epochs=epochs)
+    gsvae_trainer = Trainer(gsvae_base, trainloader, valloader, lr, device, epochs, print_every=1, grad_clip=None, summary_writer=summary_writer, csv_writer=csv_writer)
     gsvae_train_log, gsvae_val_log = gsvae_trainer.train()
 
     prior_train_data = create_indices_dataset(trainloader, gsvae_base, device)

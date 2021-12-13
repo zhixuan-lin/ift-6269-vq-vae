@@ -145,7 +145,8 @@ class Trainer:
 
             train_log.extend(self.train_one_epoch())
             val_log.append(self.validate())
-            self.on_epoch_end(epoch)
+            if self.on_epoch_end is not None:
+                self.on_epoch_end(epoch)
             if (epoch + 1) % self.print_every == 0:
                 string = 'Train: epoch: {}'.format(epoch + 1)
                 string += ', iter: {}'.format((epoch + 1) * len(self.trainloader))
