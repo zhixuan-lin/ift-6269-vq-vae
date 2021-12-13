@@ -134,8 +134,7 @@ class VanillaVAE(nn.Module):
 
     def reparameterize(self, mu, logvar):
         std = torch.exp(0.5 * logvar)
-        posterior = Normal(mu, std)     # (B, D)
-        return posterior.rsample()
+        return Normal(mu, std)     # (B, D)
 
     @property
     def device(self):
@@ -195,7 +194,8 @@ class VanillaVAE(nn.Module):
         log = {}
 
         mu, logvar = self.encode(x)
-        z = self.reparameterize(mu, logvar)
+        posterior = self.reparameterize(mu, logvar)
+        z = posterior.rsample()
         if self.loss_type == 'mse':
             recon = self.decode(z)
             # recons_loss = F.mse_loss(recon, self.normalize(x))
@@ -214,7 +214,6 @@ class VanillaVAE(nn.Module):
             output_dist = DiscretizedLogistic(n_classes=self.pixel_range, loc=loc, scale=scale)
             # Note, you should use sum here, and then mean over batch
             nll_output = -output_dist.log_prob(x).sum(dim=[1, 2, 3]).mean(dim=0)
-            assert nll_output.size() == x.size()
 
             recon = loc_tmp
 
@@ -272,7 +271,8 @@ class VanillaVAE(nn.Module):
             something like x
         """
         mu, logvar = self.encode(x)
-        embeddings = self.reparameterize(mu, logvar)
+        posterior = self.reparameterize(mu, logvar)
+        embeddings = posterior.rsample()
         return self.decode_and_unnormalize(embeddings)
 
 
