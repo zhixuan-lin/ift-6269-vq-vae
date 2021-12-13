@@ -231,12 +231,14 @@ class VanillaVAE(nn.Module):
         kl_loss = kl_divergence(posterior, Normal(0, 1)).sum(dim=[1]).mean(dim=0)
 
         # Here, you average over number of pixels.
-        neg_elbo = (nll_output + kl_loss) / (H * W * C)
+        # Average over numbr of pixels, even for KL. 
+        nll_output /= (H * W * C)
+        kl_loss /= (H * W * C)
+        neg_elbo = nll_output + kl_loss
         loss = neg_elbo
 
         # Logging purpose only
         # Right scale here
-        nll_output = nll_output / (H * W * C)
         recons_loss = F.mse_loss(recon, self.normalize(x))
         nll_lb = neg_elbo
         bits_per_dim = nll_lb / np.log(2)
