@@ -367,8 +367,16 @@ class GumbelSoftmaxVAEBase(nn.Module):
     def quantize(self, encoded):
         B, D, H, W = encoded.size()
 
-        samples = F.gumbel_softmax(encoded, self.tau, dim=1)
-        indices = torch.argmax(samples, dim=1)
+        # (B, D, H*W)
+        encoded_flat = encoded.view(B, D, H*W)
+        # (1, K, D)
+        weight = self.codebook.weight[None, ...]
+        # (B, 1, H*W) + (1, K, 1) + (1, K, D) @ (B, D, H*W) = (B, K, H*W)
+        squared_dist = (encoded_flat ** 2).sum(dim=1, keepdim=True) + (weight ** 2).sum(dim=2, keepdim=True) - 2 * weight @ encoded_flat
+
+        # (B, K, H*W) -> (B, H, W)
+        indices = torch.argmin(squared_dist, dim=1).view(B, H, W)
+        # (B, H, W, D)
         embeddings = self.codebook(indices)
         embeddings = embeddings.permute(0, 3, 1, 2)
         assert encoded.size() == embeddings.size() == (B, D, H, W)
