@@ -310,7 +310,9 @@ def gumbel_softmax(logits, temperature, latent_dim, categorical_dim=10,
     return y_hard, qy
 
 class GumbelSoftmaxVAEBase(nn.Module):
-    def __init__(self, beta=0.25, loss_type='mse', pixel_range=256, num_embed=512, embed_dim=64, vq_loss_weight=1.0, n_hidden=128, res_hidden=32, data_variance=0.06327039811675479):
+    def __init__(self, beta=0.25, loss_type='mse', pixel_range=256, num_embed=512,
+        embed_dim=64, vq_loss_weight=1.0, n_hidden=128, res_hidden=32,
+        tau=1.0, data_variance=0.06327039811675479):
         super().__init__()
         assert loss_type in ['mse', 'discretized_logistic']
         self.loss_type = loss_type
@@ -326,6 +328,7 @@ class GumbelSoftmaxVAEBase(nn.Module):
         self.pixel_range = pixel_range
         self.num_embed = num_embed
         self.embed_dim = embed_dim
+        self.tau = tau  # temperature
         self.data_variance = data_variance
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
@@ -362,21 +365,23 @@ class GumbelSoftmaxVAEBase(nn.Module):
         return indices, encoded, embeddings
 
     def quantize(self, encoded):
-        B, D, H, W = encoded.size()
+        B, N, H, W = encoded.size()
 
-        # (B, D, H*W)
-        encoded_flat = encoded.view(B, D, H*W)
-        # (1, K, D)
-        weight = self.codebook.weight[None, ...]
-        # (B, 1, H*W) + (1, K, 1) + (1, K, D) @ (B, D, H*W) = (B, K, H*W)
-        squared_dist = (encoded_flat ** 2).sum(dim=1, keepdim=True) + (weight ** 2).sum(dim=2, keepdim=True) - 2 * weight @ encoded_flat
+        samples = F.gumbel_softmax(encoded, self.tau, dim=1)
+        indices = torch.argmax(samples, dim=1)
+        samples_flat = samples.view(B, N, H*W)  # (B, N, H*W)
 
-        # (B, K, H*W) -> (B, H, W)
-        indices = torch.argmin(squared_dist, dim=1).view(B, H, W)
-        # (B, H, W, D)
-        embeddings = self.codebook(indices)
-        embeddings = embeddings.permute(0, 3, 1, 2)
-        assert encoded.size() == embeddings.size() == (B, D, H, W)
+        # # (B, D, H*W)
+        # encoded_flat = encoded.view(B, D, H*W)
+        # # (1, K, D)
+        # weight = self.codebook.weight[None, ...]
+        weight_T = self.codebook.weight.permute(1, 0)
+        assert weight_T.size() == (self.embed_dim, self.num_embed)
+
+        embeddings_flat = weight_T @ samples_flat   # (D, N) @ (B, N, H*W)  = (B, D, H*W)
+        embeddings = embeddings_flat.view(B, self.embed_dim, H, W)
+        assert embeddings.size() == (B, self.embed_dim, H, W)
+
         return indices, embeddings
 
 
@@ -404,20 +409,12 @@ class GumbelSoftmaxVAEBase(nn.Module):
 
         log = {}
         indices, encoded, embeddings = self.encode(x)
-        codebook_loss = F.mse_loss(embeddings, encoded.detach())
-        commitment_loss = F.mse_loss(encoded, embeddings.detach())
-
-        log.update(dict(
-            codebook_loss=codebook_loss,
-            commitment_loss=commitment_loss
-        ))
 
         if self.loss_type == 'mse':
             recon = self.decode(encoded, embeddings)
             recon_loss = F.mse_loss(recon, self.normalize(x))
             # TODO: Loss scaling:
-            loss = recon_loss / self.data_variance + self.vq_loss_weight * (codebook_loss + self.beta * commitment_loss)
-            assert recon_loss.size() == codebook_loss.size() == commitment_loss.size()
+            loss = recon_loss / self.data_variance
             # Following are logging code. No need to read.
             # This is not meaningful. Doing it here anyway. p(x|z)
             nll_output = recon_loss / self.data_variance + math.log(2 * math.pi * self.data_variance)
@@ -446,7 +443,7 @@ class GumbelSoftmaxVAEBase(nn.Module):
             assert nll_output.size() == x.size()
             nll_output = nll_output.mean()
             # Note negative loglikeliood
-            loss = nll_output + self.vq_loss_weight * (codebook_loss + self.beta * commitment_loss)
+            loss = nll_output
 
             # Logging purpose only
             # Note loc_tmp is in range (-0.5, 0.5)

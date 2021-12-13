@@ -178,7 +178,7 @@ def train_gsvae(
     device='auto',
     lr=3e-4,
     prior_lr=1e-3,
-    beta=1.0,
+    beta=0.25,
     vq_loss_weight=1.0,
     num_embed=512,
     embed_dim=64,
@@ -186,10 +186,7 @@ def train_gsvae(
     epochs=20,
     prior_epochs=20,
     n_hidden=128,
-    res_hidden=32,
-    categorical_dim=10,
-    temperature=1.0,
-    hard_gs=False
+    res_hidden=32
 ):
     assert train_dataset is not None and val_dataset is not None
 
@@ -203,7 +200,7 @@ def train_gsvae(
 
     trainloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
     valloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
-    gsvae_base = GumbelSoftmaxVAEBase(beta=beta, loss_type=loss_type, num_embed=num_embed, embed_dim=embed_dim, n_hidden=n_hidden, res_hidden=res_hidden, categorical_dim=categorical_dim, temperature=temperature, hard_gs=hard_gs)
+    gsvae_base = GumbelSoftmaxVAEBase(beta=beta, loss_type=loss_type, vq_loss_weight=vq_loss_weight, num_embed=num_embed, embed_dim=embed_dim, n_hidden=n_hidden, res_hidden=res_hidden)
     gsvae_base = gsvae_base.to(device)
     gsvae_trainer = Trainer(gsvae_base, trainloader, valloader, lr, device, epochs, print_every=1, grad_clip=None, summary_writer=summary_writer, csv_writer=csv_writer)
     gsvae_train_log, gsvae_val_log = gsvae_trainer.train()
