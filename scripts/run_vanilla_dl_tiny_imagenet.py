@@ -24,6 +24,7 @@ def main():
         exp_name='vanilla_vae_dl_tiny_imagenet',
         loss_type='discretized_logistic',
         epochs=100,
+        embed_dim=256,
     )
     # train_data, val_data = np.zeros((100, 32, 32, 3)), np.zeros((10000, 32, 32, 3))
 
