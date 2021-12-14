@@ -1,4 +1,5 @@
 run.sh
+batch_run.sh
 .psync
 data/
 results/

@@ -10,13 +10,68 @@ from torch.utils.data import DataLoader, Dataset
 from torchvision import transforms
 from torchvision.utils import make_grid
 from vqvae_lib.vqvae import VQVAE, VQVAEBase, create_indices_dataset, VQVAEPrior
+from vqvae_lib.baselines import GumbelSoftmaxVAE, GumbelSoftmaxVAEBase, GumbelSoftmaxVAEPrior
 from vqvae_lib.utils import Trainer, save_results, attach_run_id, CSVWriter
-from vqvae_lib.baselines import VanillaVAE, GumbelSoftmaxVAE, GumbelSoftmaxVAEBase, GumbelSoftmaxVAEPrior
 import matplotlib.pyplot as plt
 import pathlib
 from torch.utils.tensorboard import SummaryWriter
 from pathlib import Path
 
+def evaluate_loglikelihood(discrete_type, train_dataset, val_dataset, result_dir, exp_name_with_id, image_size, device, loss_type, num_embed=512, embed_dim=64, n_hidden=128, res_hidden=32, tau_start=1.0, batch_size=32):
+    assert osp.exists(result_dir)
+    if device =='auto':
+        device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
+    trainloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=False)
+    valloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+    save_path = osp.join(result_dir, exp_name_with_id, 'model.pth')
+    checkpoint = torch.load(save_path, map_location=device)
+    latent_size = image_size // 4
+    if discrete_type == 'vq':
+        vqvae_base = VQVAEBase(loss_type=loss_type, num_embed=num_embed, embed_dim=embed_dim, n_hidden=n_hidden, res_hidden=res_hidden).to(device)
+        vqvae_prior = VQVAEPrior(image_shape=(latent_size, latent_size, 1), channel_ordered=False, n_colors=num_embed, n_layers=8, n_filters=64).to(device)
+        vqvae_base.load_state_dict(checkpoint['vqvae_base'])
+        vqvae_prior.load_state_dict(checkpoint['vqvae_prior'])
+        model = VQVAE(vqvae_base, vqvae_prior)
+    elif discrete_type =='gs':
+        gsvae_base = GumbelSoftmaxVAEBase(loss_type=loss_type, num_embed=num_embed, embed_dim=embed_dim, n_hidden=n_hidden, res_hidden=res_hidden, tau=tau_start).to(device)
+        gsvae_prior = GumbelSoftmaxVAEPrior(image_shape=(latent_size, latent_size, 1), channel_ordered=False, n_colors=num_embed, n_layers=8, n_filters=64).to(device)
+        gsvae_base.load_state_dict(checkpoint['gsvae_base'])
+        gsvae_prior.load_state_dict(checkpoint['gsvae_prior'])
+        model = GumbelSoftmaxVAE(gsvae_base, gsvae_prior)
+    else:
+        raise ValueError(f'Invalid discrete type {discrete_type}')
+
+    train_loglike_total = 0.0
+    train_count = 0
+    print('Evaluating train log likelihood..')
+    for data in trainloader:
+        data = data.to(device)
+        B = data.size(0)
+        loglike = model.logprob(data)
+        assert loglike.size() == (B,)
+        train_loglike_total += loglike.sum().item()
+        train_count += B
+
+    val_loglike_total = 0.0
+    val_count = 0
+    print('Evaluating val log likelihood..')
+    for data in valloader:
+        data = data.to(device)
+        B = data.size(0)
+        loglike = model.logprob(data)
+        assert loglike.size() == (B,)
+        val_loglike_total += loglike.sum().item()
+        val_count += B
+
+    train_loglike = train_loglike_total / train_count
+    val_loglike = val_loglike_total / val_count
+    print('Train log')
+    logpath = osp.join(result_dir, 'loglikelihood.txt')
+    with open(logpath, 'w') as f:
+        print('Train loglikelihood: ', train_loglike, file=f)
+        print('val loglikelihood: ', val_loglike, file=f)
+    print('Train loglikelihood: ', train_loglike)
+    print('val loglikelihood: ', val_loglike)
 
 
 def train_vqvae(
