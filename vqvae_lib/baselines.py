@@ -357,7 +357,7 @@ class GumbelSoftmaxVAEBase(nn.Module):
 
     @torch.no_grad()
     def reconstruct(self, x):
-        _, encoding = self.encode(x)
+        _, encoding, _ = self.encode(x)
         return self.decode_and_unnormalize(encoding)
 
     def forward(self, x):
@@ -488,3 +488,30 @@ class GumbelSoftmaxVAE(nn.Module):
     @torch.no_grad()
     def reconstruct(self, *args, **kargs):
         return self.base.reconstruct(*args, **kargs)
+
+    def logprob(self, x):
+        # A lower bound
+        B, C, H, W = x.size()
+        assert self.base.loss_type == 'discretized_logistic'
+        indices, encoding, _ = self.base.encode(x)
+        params = self.base.decode(encoding)
+        # (B, 3, H, W), (B, 3, H, W)
+        loc_tmp, scale_tmp = params.chunk(2, dim=1)
+        # Let loc_tmp stay in (-0.5, 0.5). loc in [0, 255]
+        loc = self.base.unnormalize(loc_tmp)
+        scale = F.softplus(scale_tmp)
+        likelihood_dist = DiscretizedLogistic(n_classes=self.base.pixel_range, loc=loc, scale=scale)
+        output_likelihood = likelihood_dist.log_prob(x)
+        assert output_likelihood.size() == x.size()
+        output_likelihood = output_likelihood.flatten(start_dim=1).sum(dim=1)
+
+        # (B, N, 1, H, W)
+        logits = self.prior.compute_logits(indices[:, None])
+        log_probs_all = F.log_softmax(logits, dim=1)
+        # (B, H, W) -> (B, 1, 1, H, W)
+        indices_expand = indices[:, None, None]
+        log_probs = torch.gather(log_probs_all, dim=1, index=indices_expand)
+        p_z = log_probs.flatten(start_dim=1).sum(dim=1)
+
+        loglike = (output_likelihood + p_z) / (H * W * C)
+        return loglike
