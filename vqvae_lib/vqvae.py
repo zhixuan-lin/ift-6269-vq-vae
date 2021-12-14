@@ -520,7 +520,7 @@ class VQVAEBase(nn.Module):
             recon_loss = F.mse_loss(loc_tmp, self.normalize(x))
 
             # Lowerbound of marginal likelihood
-            nll_lb = nll_output + np.prod(indices[1:].size()) * math.log(self.num_embed) / np.prod(x[1:].size())
+            nll_lb = nll_output + np.prod(indices.size()[1:]) * math.log(self.num_embed) / np.prod(x.size()[1:])
 
             bits_per_dim = nll_lb / math.log(2)
             log.update({
