@@ -357,7 +357,7 @@ class GumbelSoftmaxVAEBase(nn.Module):
 
     @torch.no_grad()
     def reconstruct(self, x):
-        _, encoding = self.encode(x)
+        _, encoding, _ = self.encode(x)
         return self.decode_and_unnormalize(encoding)
 
     def forward(self, x):
